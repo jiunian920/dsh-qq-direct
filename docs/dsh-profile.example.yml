@@ -1,0 +1,19 @@
+# Merge the entries into your local DSH profile. Replace all example paths and the session ID.
+- insert:
+    - id: qq-direct
+      name: 'file:///C:/QQWorkbench/plugins/qq-direct.mjs'
+      config:
+        sessionId: '<existing-session-id>'
+        database: 'C:/QQWorkbench/qq-bridge/state/direct-qq.sqlite3'
+    - id: dsh-token-reporter
+      name: 'file:///C:/QQWorkbench/plugins/dsh-token-reporter.mjs'
+      config:
+        host: '127.0.0.1'
+        outPath: 'C:/QQWorkbench/qq-bridge/state/dsh-launch.json'
+    - id: mcp-snowluma
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: snowluma
+        transport: stdio
+        command: 'node'
+        args: ['C:/QQWorkbench/qq-bridge/src/mcp-snowluma-safe.js']

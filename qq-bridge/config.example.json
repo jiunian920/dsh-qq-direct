@@ -1,0 +1,22 @@
+{
+  "ownerQQ": null,
+  "allow": { "private": [], "groups": [] },
+  "deny": { "private": [], "groups": [] },
+  "allowAllWhenEmpty": false,
+  "consolePort": 3110,
+  "dsh": { "baseUrl": "http://127.0.0.1:3080", "authToken": "" },
+  "snowluma": {
+    "wsUrl": "ws://127.0.0.1:3001",
+    "httpUrl": "http://127.0.0.1:3000",
+    "accessToken": ""
+  },
+  "directSession": { "enabled": false, "sessionId": "" },
+  "memory": { "enabled": false },
+  "voice": { "enabled": false },
+  "legacyComputerTasks": { "enabled": false },
+  "socialV2": {
+    "enabled": true,
+    "wait": { "maxMs": 600000 },
+    "selfAccount": { "enabled": false, "avatar": false, "signature": false, "qzone": false }
+  }
+}
