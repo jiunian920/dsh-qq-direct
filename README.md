@@ -37,6 +37,6 @@
 
 > Required Notice: Copyright 2026 Derpyu520 and qq-bridge contributors
 
-本项目的分发许可待完成源码来源核对后确定。SnowLuma 由使用者自行安装，并按其自身条款使用。 [SnowLuma 许可说明](https://github.com/SnowLuma/SnowLuma/blob/main/EULA.md)
+本项目基于 `Derpyu520/qq-bridge` 的 `v0.1.5` 分支改造。该项目的 `NOTICE` 说明 `v0.2.1-r1` 及更早的发布仍可按 MIT 条款使用，因此本项目以 **MIT** 许可发布，版权声明已并入 [LICENSE](./LICENSE)。SnowLuma 由使用者自行安装，并按其自身条款使用。 [SnowLuma 许可说明](https://github.com/SnowLuma/SnowLuma/blob/main/EULA.md)
 
 📖 [详细架构原理与跨机复建手册](./docs/ARCHITECTURE.md)
