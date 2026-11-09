@@ -160,7 +160,7 @@ CREATE TABLE IF NOT EXISTS context_seen (id TEXT PRIMARY KEY);
 | `input` | 桥写入。`INSERT OR IGNORE` 以 `id` 去重。DSH 插件只在会话事件落盘后标为 `consumed`。 |
 | `outgoing` | DSH 工具写待发送记录。桥以原子 `UPDATE … RETURNING` 领走下一条并写回状态。 |
 | `revisit` | DSH 记录智能体想稍后回访的群与到期时间，桥领取并校验时效。 |
-| `runtime` | 桥发布可用渠道、会话 ID、暂停状态及心跳。插件发布 DSH 是否仍持有该 Agent。 |
+| `runtime` | 桥发布可用渠道、会话 ID、暂停状态及心跳。插件发布 DSH 是否仍持有该 Agent，并持久化可选的桌面会话绑定。 |
 | `context_seen` | 桌面已临时看到某条待唤醒的 QQ 消息。该记录仍可进入后续 QQ 回合。 |
 
 ### 4.3 DSH 如何接续消息
@@ -431,6 +431,24 @@ node --check .\src\direct-runtime.js
 使用本机文件 URL 挂载插件，插件文件与 `qq-bridge/` 的相对目录关系须和第 3 节一致。`qq-direct.mjs` 声明需要 `agents`、`tools`、`timer` 与 `sessionPersistence`，应装在可获得这些服务的 DSH 作用域。MCP 配置需要更新时，重开或按目标 DSH 支持的方式重载 profile。
 
 若目标环境含兼容旧桥的预设安装器，先检查其覆盖范围。主会话使用它原有的预设，直连绑定由两端的 `sessionId` 完成。旧桥预设不能凭名称自动代替已有主会话。`DSH_TOKEN_OUT` 可覆盖报告插件的输出位置，隔离测试必须写入测试目录。
+
+<a name="auto-follow"></a>
+
+#### 可选：自动跟随新建的桌面主会话
+
+默认使用两端配置里同一个 `sessionId`。若希望在指定工作区的新对话里发出首条桌面消息时接手 QQ，在 `qq-direct` 插件的 `config` 下启用：
+
+```yaml
+        followDesktop:
+          cwd: 'C:/QQWorkbench'
+          agentPreset: standard
+```
+
+将 `cwd` 和 `agentPreset` 替换为实际的目标工作区绝对路径和会话预设。自动跟随只接受带请求 ID 和客户端时区、且未标注外部调用者的 DSH 用户输入。还要求会话属于配置范围，是较新且非派生的顶层会话。未加载已绑定会话且账本没有已记录的创建时间时，只接受本次插件启动后创建的会话。这个筛选基于当前 DSH 桌面使用的事件字段。能模拟相同字段的受信任本地 RPC 客户端也可能触发，应把该功能限制在可信部署。
+
+插件等正在处理的 QQ 回合结束，再写入同一个 SQLite 账本的 `runtime/session-binding`。桥和插件共享此绑定，重启后继续使用。切换期间心跳不一致时，入站消息留在账本等待。旧会话的待发请求在发往网关前被拒绝。网关已经接手的发送应以实际回执核对。
+
+升级早期文本指针试验版时，先把两端配置中的 `sessionId` 对齐到确认过的当前会话，再同步更新桥和插件并按正常流程重载。新版的持久绑定由 SQLite 保存。若要手动选择其他会话，先等待 QQ 回合结束，再将两端 `sessionId` 改为新选定的同一个 ID 并重载。原先的持久绑定只在它记录的初始配置 ID 与当前配置一致时生效。关闭 `followDesktop` 会停止后续自动跟随，已保存的有效绑定仍可恢复。
 
 ### 9.5 第五步 · 初始化状态和启动顺序
 

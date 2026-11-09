@@ -59,6 +59,16 @@ export function replyTarget(channel, selected, { replyTo, toSender, mention = fa
   return { replyToMessageId: replyTo, atUserId: mention && channel.startsWith('group:') ? selected.senderId : null };
 }
 
+export function directSessionBinding(store, configuredSessionId) {
+  const saved = store.runtime('session-binding');
+  if (saved?.configuredSessionId !== configuredSessionId) return { sessionId: configuredSessionId, createdAt: 0 };
+  if (typeof saved.sessionId !== 'string' || !/^session-[\w-]+$/.test(saved.sessionId)
+    || !Number.isSafeInteger(saved.createdAt) || saved.createdAt <= 0) {
+    throw new Error('QQ 直连的主会话绑定无效，请核对账本。');
+  }
+  return saved;
+}
+
 export function openDirectStore(filename) {
   const db = new DatabaseSync(filename);
   db.exec(`PRAGMA busy_timeout=2500; PRAGMA journal_mode=WAL;

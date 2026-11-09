@@ -5,6 +5,10 @@
       config:
         sessionId: '<existing-session-id>'
         database: 'C:/QQWorkbench/qq-bridge/state/direct-qq.sqlite3'
+        # Optional. Uncomment and match the intended desktop workspace and preset.
+        # followDesktop:
+        #   cwd: 'C:/QQWorkbench'
+        #   agentPreset: standard
     - id: dsh-token-reporter
       name: 'file:///C:/QQWorkbench/plugins/dsh-token-reporter.mjs'
       config:

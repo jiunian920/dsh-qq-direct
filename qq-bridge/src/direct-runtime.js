@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { directEvent, replyTarget } from './direct-store.mjs';
+import { directEvent, directSessionBinding, replyTarget } from './direct-store.mjs';
 import { groupWake } from './qq-wake.js';
 import { SLANG_STATUS } from './slang-learner.js';
 import { assertDirectSend, checkedMediaPath } from './direct-permissions.js';
@@ -12,6 +12,7 @@ export function createDirectRuntime({
 }) {
   const directWakeAt = new Map();
   let directMemoryDirty = true;
+  const sessionId = () => directSessionBinding(directStore, cfg.directSession.sessionId).sessionId;
 
   function appendDirect(item) {
     const inserted = directStore.append(item);
@@ -69,7 +70,7 @@ export function createDirectRuntime({
     const channel = `private:${cfg.ownerQQ}`;
     const host = directStore.runtime('dsh');
     if (!directAllowed(channel) || isPaused()
-      || cfg.socialV2?.tools?.selfAccount === false || host?.sessionId !== cfg.directSession.sessionId
+      || cfg.socialV2?.tools?.selfAccount === false || host?.sessionId !== sessionId()
       || !host.available || Date.now() - host.at >= 10_000) return;
     ensureChannelState(channel);
     await sharedQzonePolicy.opportunity(channel, cfg, ({ id, expiresAt, hint }) => {
@@ -88,12 +89,13 @@ export function createDirectRuntime({
         if (!directAllowed(job.channel) || isPaused() || job.expires < Date.now()) {
           throw new Error('当前 QQ 回合已过期或暂停。');
         }
+        if (job.sessionId !== sessionId()) throw new Error('发送请求与主会话不匹配。');
       };
       verify();
       const trigger = directStore.get(job.trigger);
       // ⭐ 2026-11-08 跨渠道：主人私聊 ↔ 白名单群 可以互相发；别的渠道不许
       const crossAllowed = [`private:${cfg.ownerQQ}`, ...cfg.allow.groups.map(id => `group:${id}`)];
-      if (job.sessionId !== cfg.directSession.sessionId || !trigger?.wake
+      if (!trigger?.wake
         || !directAllowed(trigger.channel)
         || (trigger.channel !== job.channel && !crossAllowed.includes(job.channel))) {
         throw new Error('发送请求与主会话或原 QQ 渠道不匹配。');
@@ -147,6 +149,7 @@ export function createDirectRuntime({
         output.file = abs;
       } else {
         if (job.format !== 'text' || !body || body.length > 500) throw new Error('文字长度无效。');
+        verify();
         mayHaveSent = true;
         data = await onebotSend(kind, id, body, replyToMessageId, atUserId);
       }
@@ -170,7 +173,7 @@ export function createDirectRuntime({
       const now = Date.now();
       if (now - lastHeartbeat >= 1500) {
         const channels = [`private:${cfg.ownerQQ}`, ...cfg.allow.groups.map(id => `group:${id}`)].filter(directAllowed);
-        directStore.publish('bridge', { at: now, sessionId: cfg.directSession.sessionId,
+        directStore.publish('bridge', { at: now, sessionId: sessionId(),
           channels, paused: isPaused() });
         lastHeartbeat = now;
       }

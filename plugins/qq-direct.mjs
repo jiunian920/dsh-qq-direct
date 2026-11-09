@@ -1,6 +1,7 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { openDirectStore } from '../qq-bridge/src/direct-store.mjs';
+import { directSessionBinding, openDirectStore } from '../qq-bridge/src/direct-store.mjs';
 import { renderQQContext } from './qq-direct-context.mjs';
 import { assertDirectSend, checkedMediaPath } from '../qq-bridge/src/direct-permissions.js';
 
@@ -22,8 +23,50 @@ function tokenReader(stateFile) {
 
 export function apply(ctx, config) {
   if (!config?.sessionId || !config?.database) return;
-  const target = String(config.sessionId);
   const store = openDirectStore(config.database);
+  ctx.effect(() => () => store.close());
+  const configuredSessionId = String(config.sessionId);
+  const startedAt = Date.now();
+  let binding = directSessionBinding(store, configuredSessionId);
+  let target = binding.sessionId;
+  const follow = config.followDesktop;
+  const workspace = typeof follow?.cwd === 'string' && path.isAbsolute(follow.cwd) && path.resolve(follow.cwd);
+  const preset = typeof follow?.agentPreset === 'string' && follow.agentPreset;
+  let pendingBinding;
+
+  function bindWhenIdle() {
+    if (scene || !pendingBinding) return;
+    try {
+      store.publish('session-binding', pendingBinding);
+    } catch (error) {
+      console.error('[qq-direct] 会话绑定写入失败:', error.message);
+      return;
+    }
+    binding = pendingBinding;
+    target = binding.sessionId;
+    pendingBinding = undefined;
+    publishedAt = 0;
+  }
+
+  if (workspace && preset) {
+    ctx.on('agent/inbox/inserted', ({ agent, message }) => {
+      const source = message?.source;
+      // Current desktop prompts carry both fields; plain user-kind events do not.
+      if (source?.kind !== 'user' || typeof source.rpcId !== 'string' || !source.rpcId
+        || typeof source.clientTimeZone !== 'string' || !source.clientTimeZone || source.principal != null) return;
+      const header = agent?.session?.header;
+      const id = String(agent?.id ?? '');
+      if (!/^session-[\w-]+$/.test(id) || id === target || header?.id !== id
+        || header.parentSession || header.origin || header.isSeeded || header.agentPreset !== preset
+        || typeof header.cwd !== 'string' || !path.isAbsolute(header.cwd) || path.relative(workspace, header.cwd) !== ''
+        || !Number.isSafeInteger(header.createdAt)) return;
+      const baseline = binding.createdAt || ctx.agents.get(target)?.session?.header?.createdAt || startedAt;
+      if (header.createdAt <= baseline || (pendingBinding && id !== pendingBinding.sessionId
+        && header.createdAt <= pendingBinding.createdAt)) return;
+      pendingBinding = { configuredSessionId, sessionId: id, createdAt: header.createdAt };
+      bindWhenIdle();
+    });
+  }
   const exportsDir = fileURLToPath(new URL('../qq-bridge/state/exports/', import.meta.url));
   const stateFile = config.socialState ?? fileURLToPath(new URL('../qq-bridge/state/social-v2.json', import.meta.url));
   const agentTokenFor = tokenReader(stateFile);
@@ -48,11 +91,9 @@ export function apply(ctx, config) {
     'mcp__snowluma__qq_memory_query', 'mcp__snowluma__qq_memory_append']);
   const qzoneTools = new Set(['mcp__snowluma__qq_publish_self_qzone', 'mcp__snowluma__qq_self_account_status',
     'read_memory', 'mcp__memory__search_memory', 'mcp__memory__read_memory_context']);
-  const allowed = channel => {
-    const bridge = store.runtime('bridge');
-    return bridge?.sessionId === target && Date.now() - bridge.at < 10_000 && !bridge.paused
-      && Array.isArray(bridge.channels) && bridge.channels.includes(channel);
-  };
+  const allowed = (channel, bridge = store.runtime('bridge')) =>
+    bridge?.sessionId === target && Date.now() - bridge.at < 10_000 && !bridge.paused
+    && Array.isArray(bridge.channels) && bridge.channels.includes(channel);
   const writeTool = (name, description, properties, execute, required = []) => ctx.tools.register({
     name, description, timeoutMs: 85_000, parameters: { type: 'object', additionalProperties: false, properties, required },
     output: { schema: { type: 'object', required: ['text'], properties: { text: { type: 'string' } } },
@@ -154,10 +195,12 @@ export function apply(ctx, config) {
 
   ctx.on('agent/pre-step', async ({ agent, turn, step }, next) => {
     const decision = await next();
-    if (String(agent.id) !== target || decision.kind !== 'enter') return decision;
-    const items = store.pending(250);
+    if (decision.kind !== 'enter') return decision;
     const incoming = decision.messages.map(input => store.get(input.id)).find(item => item?.wake);
-    if (incoming && (!allowed(incoming.channel) || (incoming.qzone && Date.now() >= incoming.expiresAt))) return { kind: 'reject' };
+    if (incoming && (String(agent.id) !== target || !allowed(incoming.channel)
+      || (incoming.qzone && Date.now() >= incoming.expiresAt))) return { kind: 'reject' };
+    if (String(agent.id) !== target) return decision;
+    const items = store.pending(250);
     if (incoming) scene = { id: incoming.id, channel: incoming.channel, turn, senderId: incoming.senderId, qzone: incoming.qzone === true };
     else if (scene?.turn !== turn) scene = undefined;
     if (!scene && step === 1) lastDesktopAt = Date.now();
@@ -167,7 +210,9 @@ export function apply(ctx, config) {
       return false;
     });
     const passive = [];
+    const bridge = store.runtime('bridge') ?? null;
     for (const item of items) {
+      if (!allowed(item.channel, bridge)) continue;
       if (!item.wake && !admitted.has(item.id)) passive.push(message(item));
       const previewId = PREVIEW + item.id;
       if (!scene && step === 1 && item.wake && !item.opportunity && !admitted.has(previewId) && !store.sawContext(item.id)) {
@@ -182,6 +227,7 @@ export function apply(ctx, config) {
     if (event.type === 'turn/end') {
       if (!scene) lastDesktopAt = Date.now();
       scene = undefined;
+      bindWhenIdle();
     }
     if (event.type !== 'user/message') return;
     const id = String(event.data.id);
@@ -206,7 +252,7 @@ export function apply(ctx, config) {
     if (!item) return;
     if (!allowed(item.channel)) {
       const bridge = store.runtime('bridge');
-      if (bridge?.sessionId === target && Date.now() - bridge.at < 10_000 && !bridge.channels.includes(item.channel)) store.mark(item.id);
+      if (bridge?.sessionId === target && Date.now() - bridge.at < 10_000 && Array.isArray(bridge.channels) && !bridge.channels.includes(item.channel)) store.mark(item.id);
       return;
     }
     pumping = true;
@@ -214,8 +260,10 @@ export function apply(ctx, config) {
       if (initializedAgent !== agent) {
         await ctx.sessionPersistence.flush();
         await using handle = await ctx.sessionPersistence.open(agent.id, 'read');
+        if (String(agent.id) !== target) return;
         for (let offset = 0; ; ) {
           const { events } = await handle.read(offset, 512);
+          if (String(agent.id) !== target) return;
           if (!events.length) break;
           for (const event of events) {
             if (event.type !== 'user/message') continue;
@@ -227,6 +275,7 @@ export function apply(ctx, config) {
         }
         initializedAgent = agent;
       }
+      if (String(agent.id) !== target) return;
       const next = store.waking();
       if (next?.opportunity && Date.now() >= (next.expiresAt ?? next.at + 10 * 60_000)) { store.mark(next.id); return; }
       if (next && admitted.has(next.id)) {
