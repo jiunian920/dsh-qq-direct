@@ -555,7 +555,17 @@ node .\scripts\test-mux-reconnect.mjs
 | 语音无法合成 | 检查本机队列 `alive.json`、请求与回执目录、输出 WAV。核对模型音色和系统资源。 |
 | QQ 视频返回 HTTP 400 | 可能是网关提供的下载链接不可用。用新发送的测试 MP4 和可下载地址分别验证网络、解码与工具返回。 |
 
-### 10.4 回滚和数据保护
+### 10.4 本地故障诊断
+
+DSH 拒绝、工具提交失败、安全拦截、服务等待和操作超时由桥记录到本机，不作为 QQ 聊天消息发送。诊断入口是 `qq-bridge/state/bridge.log`，直连发送状态保存在 `state/direct-qq.sqlite3` 的 `outgoing` 表。发送结果不明时保留 `unknown` 状态，等待本机核对，不自动重发。一条分段消息的任一段失败后停止发送余下各段，独立的后续消息继续按序处理。
+
+旧控制台的 `/api/security` 仍能读取，`interceptNotify` 固定为 `false`。原配置里的同名选项不再启用聊天通知。正常回复、主动发起的管理查询和完成后的业务结果沿用原有权限校验。
+
+### 10.5 网关替换的边界
+
+`qq-bridge/src/bridge.js` 处理 SnowLuma 和 OneBot 的进出站连接，`direct-runtime.js` 处理直连业务，`direct-store.mjs` 维护本地账本。替换网关时可先保留 DSH 会话绑定、投递状态和本地记忆，另接入官方机器人消息事件与发送接口。官方接口使用它自己的事件、目标标识、鉴权和频控，需先转换事件并使用独立的标识命名空间，旧 OneBot 的数字 QQ 号不能直接用于路由。先验收明确触发的群聊文字回复，再按实际账号权限逐项确认私聊、媒体和主动发言。 [QQ 机器人启动接入](https://bot.q.qq.com/wiki/develop/api-v2/) · [QQ 消息收发规则](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/overview.html)
+
+### 10.6 回滚和数据保护
 
 切换前备份启动器、桥源码和配置、DSH profile patch、会话映射及数据库。SQLite WAL 模式下用一致性快照，或在确认所有写入进程停止后复制完整数据库。回滚时先停桥，恢复上一版代码或关闭 `directSession.enabled`，再恢复对应的 DSH 挂载和模式。保持主会话与新增原文记录，待发送及结果不明的动作先人工核对。
 

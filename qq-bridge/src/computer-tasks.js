@@ -151,15 +151,12 @@ export class ComputerTasks{
       const tries=Number(job.retries||0);
       if(neverSent&&tries<3){
         job.retries=tries+1;job.status='queued';save(this.file(job.id),job);
-        if(tries===0){try{await this.notify(job.key,'刚才没送出去，人家再试一次。');}catch{}}
         await new Promise((r)=>setTimeout(r,2000));
         this.queue.unshift({job,cfg});
         return;
       }
       job.status=neverSent?'failed':'uncertain';job.note=neverSent?'重试过一次仍未送出去；不用核对，等一下再发一次就行':'已送进会话但结果不明，需要在电脑DSH核对，不会自动重发';save(this.file(job.id),job);
       if(job.status==='uncertain')this.paused=true;
-      // No task text, local paths, credentials, or raw errors go back to a group.
-      try{await this.notify(job.key,neverSent?'这次没送出去（重试也失败了），过一会儿主人再发一次就行，不用核对。':'电脑任务 '+job.id+' 已送进会话但结果不明，需要在电脑上核对，不会自动重发。');}catch{}
     }finally{clearTimeout(timer);abort.abort();this.busy=false;void this.pump();}
   }
 }

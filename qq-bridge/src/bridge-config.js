@@ -74,7 +74,6 @@ export function loadBridgeConfig(root, discoverLaunchToken) {
     consolePort: file.consolePort ?? 3100,
     consoleToken: file.consoleToken ?? '',
     security: {
-      interceptNotify: true,
       ...(file.security ?? {})
     },
     slang: {

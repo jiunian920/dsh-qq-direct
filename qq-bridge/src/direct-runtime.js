@@ -155,7 +155,10 @@ export function createDirectRuntime({
       }
       directStore.finish(job.id, 'sent', { ...output, messageId: data?.message_id ?? null, at: Date.now() });
     } catch (error) {
-      directStore.finish(job.id, mayHaveSent && !error.definitive ? 'unknown' : 'failed', { error: String(error.message).slice(0, 160) });
+      const state = mayHaveSent && !error?.definitive ? 'unknown' : 'failed';
+      const detail = redactSensitiveText(error?.message ?? String(error)).slice(0, 240);
+      directStore.finish(job.id, state, { error: detail });
+      log?.(`[qq-direct] 发送未确认 (${job.channel}, ${state}):`, detail);
     } finally {
       directMemoryDirty = true;
     }

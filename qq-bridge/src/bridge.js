@@ -981,9 +981,7 @@ async function main() {
   let dshPresetIds = [];        // 当前 DSH 可用的 preset id 列表（agentPresets/list）
   let dshDefaultPreset = '';    // DSH settings `agent-presets.default`，取不到时用列表里的 isDefault
   const queued = new Map(); // key -> { promptText }[]
-  const queuedHintAt = new Map(); // key -> timestamp（冷却提示）
   const QUEUE_MAX = 50;
-  const QUEUE_HINT_COOLDOWN_MS = 30_000;
   const queueRetries = new Map(); // key -> 连续补投失败次数（用于退避/暂停恢复）
 
   // reset 竞态导致 ensureSession 抛「会话创建期间已重置」时，把消息放回队列稍后重试。
@@ -1922,23 +1920,10 @@ async function main() {
           return;
         }
 
-        // ── 安全拦截通知设置 ─────────────────────────────────────────────────
-        if (req.method === 'GET' && url.pathname === '/api/security') {
-          sendJson({ security: cfg.security ?? { interceptNotify: true } });
-          return;
-        }
-        if (req.method === 'POST' && url.pathname === '/api/security') {
-          const body = await readBody();
-          const configFile = path.join(ROOT, 'config.json');
-          const file = readJsonSafe(configFile, null, true);
-          const next = { ...(file.security ?? {}), ...body };
-          if (typeof next.interceptNotify === 'boolean') next.interceptNotify = next.interceptNotify;
-          else if (next.interceptNotify !== undefined) next.interceptNotify = Boolean(next.interceptNotify);
-          file.security = next;
-          atomicWriteJson(configFile, file);
-          cfg.security = { ...(cfg.security ?? {}), ...next };
-          log(`控制台：安全拦截通知已更新（interceptNotify=${cfg.security.interceptNotify}）`);
-          sendJson({ ok: true, security: cfg.security });
+        // 兼容旧控制台。拦截提示只记录在本机。
+        if ((req.method === 'GET' || req.method === 'POST') && url.pathname === '/api/security') {
+          if (req.method === 'POST') await readBody();
+          sendJson({ ok: true, security: { ...cfg.security, interceptNotify: false } });
           return;
         }
         // ── 控制台访问令牌（可手动修改/生成随机） ─────────────────────────────
@@ -4335,7 +4320,6 @@ async function main() {
           }
           pending.delete(key);
           queued.delete(key);
-          queuedHintAt.delete(key);
           sessionPromises.delete(key);
           drainPromptQueue(key, '会话已重置');
           social.recentMessages.delete(key);
@@ -4399,7 +4383,6 @@ async function main() {
           }
           pending.clear();
           queued.clear();
-          queuedHintAt.clear();
           sessionPromises.clear();
           drainAllPromptQueues('工作区已清空');
           social.states.clear();
@@ -4533,15 +4516,20 @@ async function main() {
     const safeMsg = redactKnownTokensOnly(msg);
     const [kind, id] = key.split(':');
     const parts = splitForQQ(safeMsg);
+    let failed = false;
     for (const part of parts) {
       sendChain = sendChain
         .then(async () => {
+          if (failed) return;
           assertSendAllowed();
           if (kind === 'private') await withTimeout(bot.sendPrivateMessage(Number(id), text(escapeCqText(part))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
           else await withTimeout(bot.sendGroupMessage(Number(id), text(escapeCqText(part))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
         })
-        .catch((error) => log(`QQ 发送失败 (${key}):`, error?.message ?? error))
-        .then(() => sleep(cfg.sendDelayMs));
+        .catch((error) => {
+          failed = true;
+          log(`QQ 发送失败 (${key}):`, error?.message ?? error);
+        })
+        .then(() => failed ? undefined : sleep(cfg.sendDelayMs));
     }
     return sendChain;
   }
@@ -4677,21 +4665,26 @@ async function main() {
     }
 
     const sent = [];
+    let failed = false;
     for (let i = 0; i < messages.length; i++) {
       const msg = redactKnownTokensOnly(messages[i]);
       const isLast = i === messages.length - 1;
       sendChain = sendChain
         .then(async () => {
+          if (failed) return;
           assertSendAllowed();
           if (kind === 'private') await withTimeout(bot.sendPrivateMessage(Number(id), text(escapeCqText(msg))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
           else await withTimeout(bot.sendGroupMessage(Number(id), text(escapeCqText(msg))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
           sent.push(msg);
         })
-        .catch((error) => log(`QQ 发送失败 (${key}):`, error?.message ?? error));
+        .catch((error) => {
+          failed = true;
+          log(`QQ 发送失败 (${key}):`, error?.message ?? error);
+        });
       if (!isLast) {
         const useLong = longProb > 0 && Math.random() < longProb;
         const delay = useLong ? randInt(longMin, longMax) : randInt(min, max);
-        sendChain = sendChain.then(() => sleep(delay));
+        sendChain = sendChain.then(() => failed ? undefined : sleep(delay));
       }
     }
     return sendChain.then(() => sent);
@@ -5195,9 +5188,6 @@ async function main() {
     if (shouldAuditKey(key) && (SENSITIVE_RE.test(text) || hasKnownToken)) {
       log(`⚠️ 回复被安全策略拦截 (${key})，疑似包含敏感信息${hasKnownToken ? '（含会话令牌）' : ''}`);
       appendActivity(`${key} agent 回复被拦截（疑似敏感信息${hasKnownToken ? '/会话令牌' : ''}）`);
-      if (cfg.security?.interceptNotify !== false) {
-        await sendToQQ(key, '⚠️ 本条回复因疑似包含敏感信息（路径/凭据/会话令牌）被安全策略拦截，已记录并通知管理员。');
-      }
       return false;
     }
     await sendToQQ(key, text);
@@ -6308,7 +6298,7 @@ async function main() {
       if (opts.farewell) social.exitingSessions.delete(sessionId);
       const errText = `${accepted.result.error.code}: ${accepted.result.error.message}`;
       const safeErrText = shouldAuditKey(key) && SENSITIVE_RE.test(errText) ? '（含敏感信息，已隐藏）' : errText;
-      if (!opts.silent) await sendToQQ(key, `⚠️ 消息未被接受：${safeErrText}`);
+      log(`DSH 未接受消息 (${key}):`, safeErrText);
       return { ok: false, error: safeErrText };
     }
     if (accepted.result.value.command?.text && !opts.silent && currentMode !== 'reserved2') {
@@ -7749,11 +7739,11 @@ async function main() {
     const isOwner = String(event.user_id) === String(cfg.ownerQQ ?? '');
     if(isOwner&&plainContent.startsWith('/电脑任务')){
       const id=plainContent.trim().split(/\s+/)[1];
-      try{await sendToQQ(key,'电脑任务状态：'+JSON.stringify(computerTasks.status(id||null)));}catch{await sendToQQ(key,'电脑任务状态暂不可读，请在本机核对。');}return;
+      try{await sendToQQ(key,'电脑任务状态：'+JSON.stringify(computerTasks.status(id||null)));}catch(error){log(`电脑任务状态读取失败 (${key}):`,error?.message ?? error);}return;
     }
     if(cfg.legacyComputerTasks?.enabled===true&&currentMode!=='closed-agent'&&explicitComputerRequest(event,cfg.ownerQQ,Date.now(),{private:String(key).startsWith('private:')})){
       try{const job=computerTasks.enqueue(cfg,key,event);if(!job.duplicate){const acks=['知道了，人家现在去弄。','收到，这就去办。','好，人家去电脑上看看。','嗯，人家这就去。'];await sendToQQ(key,acks[Math.floor(Math.random()*acks.length)]);}}
-      catch{await sendToQQ(key,'电脑任务暂未接收，请在本机核对；未自动重试。');}return;
+      catch(error){log(`电脑任务未接收 (${key}):`,error?.message ?? error);}return;
     }
     const roleState = readRoleState();
 
@@ -7805,7 +7795,6 @@ async function main() {
           }
           pending.delete(key);
           queued.delete(key);
-          queuedHintAt.delete(key);
           sessionPromises.delete(key);
           drainPromptQueue(key, '会话已重置');
           social.recentMessages.delete(key);
@@ -7870,7 +7859,7 @@ async function main() {
           }
           await sendToQQ(key, `群名片已改成「${newCard}」`);
         } catch (error) {
-          await sendToQQ(key, `改群名片失败：${error?.message ?? error}`);
+          log(`改群名片失败 (${key}):`, error?.message ?? error);
         }
         return;
       }
@@ -8034,11 +8023,6 @@ async function main() {
       }
       items.push({ promptText, media: mediaList });
       queued.set(key, items);
-      const now = Date.now();
-      if ((queuedHintAt.get(key) ?? 0) + QUEUE_HINT_COOLDOWN_MS < now) {
-        queuedHintAt.set(key, now);
-        await sendToQQ(key, '⏳ 系统服务重启中，消息已排队，恢复后自动处理。');
-      }
       log(`DSH 不可用，消息入队 (${key})`);
       return;
     }
@@ -8067,7 +8051,7 @@ async function main() {
     if (!accepted.result.ok) {
       const errText = `${accepted.result.error.code}: ${accepted.result.error.message}`;
       const safeErrText = shouldAuditKey(key) && SENSITIVE_RE.test(errText) ? '（含敏感信息，已隐藏）' : errText;
-      await sendToQQ(key, `⚠️ 消息未被接受：${safeErrText}`);
+      log(`DSH 未接受消息 (${key}):`, safeErrText);
       return;
     }
     if (accepted.result.value.command) {
@@ -8124,7 +8108,6 @@ async function main() {
         if (pending.get(key) === p) pending.delete(key);
       } catch (error) {
         log('回答问题失败（保留挂起以便重试）:', error.message);
-        await sendToQQ(key, '⚠️ 回答提交失败，请再回复一次。');
       }
       return;
     }
@@ -8153,7 +8136,6 @@ async function main() {
         if (pending.get(key) === p) pending.delete(key);
       } catch (error) {
         log('处理审批失败（保留挂起以便重试）:', error.message);
-        await sendToQQ(key, '⚠️ 审批回执提交失败，请再回复一次「通过」或「拒绝」。');
       }
       return;
     }
@@ -8241,7 +8223,6 @@ async function main() {
         pending.delete(key);
         log(`挂起请求超时 (${key})`);
         cancelPendingEntry(entry).catch(() => {});
-        sendToQQ(key, '⏰ 等待回答超时，已取消该请求');
       }
     }, cfg.questionTimeoutMs);
     entry.timer = timer;
@@ -8497,9 +8478,6 @@ async function main() {
                 if (shouldAuditKey(key) && (SENSITIVE_RE.test(plain) || hasKnownToken)) {
                   log(`⚠️ 回复被安全策略拦截 (${key})，疑似包含敏感信息${hasKnownToken ? '（含会话令牌）' : ''}`);
                   appendActivity(`${key} agent 回复被拦截（疑似敏感信息${hasKnownToken ? '/会话令牌' : ''}）`);
-                  if (cfg.security?.interceptNotify !== false) {
-                    await sendToQQ(key, '⚠️ 本条回复因疑似包含敏感信息（路径/凭据/会话令牌）被安全策略拦截，已记录并通知管理员。');
-                  }
                   if (isFarewell) {
                     const st = socialState(key);
                     if (st.phase === 'exiting') {
@@ -8568,13 +8546,8 @@ async function main() {
               } else if (ended.reason.kind === 'error') {
                 const msg = ended.reason.error?.message ?? '未知错误';
                 const safeMsg = shouldAuditKey(key) && SENSITIVE_RE.test(msg) ? '（含敏感信息，已隐藏）' : msg.slice(0, 500);
-                // ⭐ 2026-11-04 主人要求：群里不显示系统报错（会吓到群友），只写日志；私聊照发
-                if (String(key).startsWith('group:')) {
-                  log(`[error] agent 处理出错（群里静默，只记日志）(${key}): ${safeMsg.slice(0, 200)}`);
-                  appendActivity(`${key} agent 处理出错（群里不转发）：${safeMsg.slice(0, 120)}`);
-                } else {
-                  await sendToQQ(key, `⚠️ agent 处理出错：${safeMsg}`);
-                }
+                log(`agent 处理出错 (${key}):`, safeMsg);
+                appendActivity(`${key} agent 处理出错，详见本机日志`);
                 if (isFarewell) {
                   const st = socialState(key);
                   if (st.phase === 'exiting') {

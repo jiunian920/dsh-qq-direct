@@ -176,7 +176,7 @@ export function apply(ctx, config) {
         exec?.signal?.throwIfAborted();
         const result = store.result(id);
         if (result?.state === 'sent') return { text: `QQ 已确认发送，消息 ID：${result.messageId ?? '网关未提供'}` };
-        if (result?.state === 'failed') throw new Error(result.error);
+        if (result?.state === 'failed') throw new Error('QQ 发送未完成，诊断见本机桥接日志。');
         if (result?.state === 'unknown') return { text: '发送结果待核实。请先查聊天记录，避免重复发送。' };
         await new Promise(resolve => setTimeout(resolve, 180));
       }

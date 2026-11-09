@@ -849,15 +849,8 @@
     </section>
 
     <section class="card">
-      <h2><span class="sec-no">12</span>安全拦截通知</h2>
-      <div class="row">
-        <label style="flex:1">拦截时在群里发提示</label><input type="checkbox" id="secInterceptNotify" style="width:auto">
-      </div>
-      <div class="row" style="margin-top:8px">
-        <button id="secSave" class="small">保存安全设置</button>
-        <span class="meta" id="secMsg"></span>
-      </div>
-      <div class="meta">开启：回复被安全拦截时会在群里提示；关闭：直接沉默，只在日志/活动记录里留下记录。</div>
+      <h2><span class="sec-no">12</span>本地诊断</h2>
+      <div class="meta">安全拦截和系统错误记录在本机日志，不向 QQ 发送提示。</div>
     </section>
 
     <!-- ============ 12b 控制台访问令牌 ============ -->
@@ -2151,19 +2144,6 @@ document.getElementById('slangConfigSave').addEventListener('click', async () =>
   if (r.ok) loadSlangConfig();
 });
 
-function loadSecurity() {
-  api('/api/security').then(r => {
-    document.getElementById('secInterceptNotify').checked = r.security?.interceptNotify !== false;
-  }).catch(() => {});
-}
-document.getElementById('secSave').addEventListener('click', async () => {
-  const r = await api('/api/security', 'POST', { interceptNotify: document.getElementById('secInterceptNotify').checked });
-  const msg = document.getElementById('secMsg');
-  msg.textContent = r.ok ? '✅ 已保存' : ('❌ ' + (r.error || '失败'));
-  msg.className = r.ok ? 'meta ok' : 'meta err';
-  if (r.ok) loadSecurity();
-});
-
 async function changeConsoleToken(generate) {
   const input = document.getElementById('consoleTokenInput');
   const msg = document.getElementById('consoleTokenMsg');
@@ -2188,7 +2168,7 @@ async function changeConsoleToken(generate) {
 document.getElementById('consoleTokenSave').addEventListener('click', () => changeConsoleToken(false));
 document.getElementById('consoleTokenRandom').addEventListener('click', () => changeConsoleToken(true));
 
-refresh(); refreshRoles(); refreshWhitelist(); refreshSessions(); refreshPending(); refreshPresets(); loadSocialForm(); loadV2Config(); refreshV2Activity(); loadV2ToolLog(); loadV2SessionOptions(); refreshSocialStatus(); refreshSlang(); loadSlangConfig(); loadSecurity();
+refresh(); refreshRoles(); refreshWhitelist(); refreshSessions(); refreshPending(); refreshPresets(); loadSocialForm(); loadV2Config(); refreshV2Activity(); loadV2ToolLog(); loadV2SessionOptions(); refreshSocialStatus(); refreshSlang(); loadSlangConfig();
 setInterval(() => { refresh(); refreshSessions(); refreshPending(); refreshSocialStatus(); refreshSlang(); }, 3000);
 </script>
 </body>

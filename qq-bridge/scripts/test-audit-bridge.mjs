@@ -47,6 +47,42 @@ await test('queued send rechecks allowlist at actual transport time', async (h) 
   await sending;
   assert.equal(h.calls.sent.length, 0);
 });
+await test('DSH rejection and intercepted text stay local in group and private chat', async (h) => {
+  h.setMode('chat');
+  h.cfg.security = { interceptNotify: true };
+  h.api.sessions.prompt = async () => ({ result: { ok: false, error: {
+    code: 'TEST_REJECTED', message: 'fixture diagnostic',
+  } } });
+  for (const key of ['group:456', 'private:123']) {
+    const result = await h.deliverPrompt(key, 'fixture message');
+    assert.equal(result.ok, false);
+    assert.equal(await h.auditAndSend(key, 'token=example-secret'), false);
+  }
+  assert.deepEqual(h.calls.sent, []);
+  h.cfg.sendDelayMs = 0;
+  await h.sendToQQ('group:456', '正常回复');
+  assert.equal(h.calls.sent.length, 1);
+});
+{
+  let attempts = 0;
+  const h = await bridgeHarness({ bot: { async sendGroupMessage() {
+    attempts++;
+    if (attempts === 1) throw new Error('fixture transport failure');
+  } } });
+  try {
+    h.setMode('chat');
+    const sent = await h.sendBurstToQQ('group:456', ['第一段', '第二段'], 0, 0);
+    assert.equal(sent.length, 0);
+    assert.equal(attempts, 1);
+    h.cfg.sendDelayMs = 0;
+    await h.sendToQQ('group:456', '下一条独立消息');
+    assert.equal(attempts, 2);
+    console.log('PASS failed multipart transport stops only that message');
+  } catch (error) {
+    failures++;
+    console.error('FAIL failed multipart transport:', error.message);
+  } finally { await h.close(); }
+}
 await test('old prompt completion cannot delete replacement queue after reset', async (h) => {
   const release = [];
   h.api.sessions.prompt = async () => {
