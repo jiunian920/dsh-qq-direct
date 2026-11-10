@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { directSessionBinding, openDirectStore } from '../qq-bridge/src/direct-store.mjs';
-import { renderQQContext } from './qq-direct-context.mjs';
+import { QQ_SAFETY, renderQQContext } from './qq-direct-context.mjs';
 import { assertDirectSend, checkedMediaPath } from '../qq-bridge/src/direct-permissions.js';
 
 export const name = 'qq-direct';
@@ -24,6 +24,8 @@ function tokenReader(stateFile) {
 export function apply(ctx, config) {
   if (!config?.sessionId || !config?.database) return;
   const store = openDirectStore(config.database);
+  const budget = config.qqDirect?.contextBudgetChars;
+  const contextBudgetChars = Number.isSafeInteger(budget) && budget >= 0 ? Math.min(budget, 20_000) : 4000;
   ctx.effect(() => () => store.close());
   const configuredSessionId = String(config.sessionId);
   const startedAt = Date.now();
@@ -77,6 +79,7 @@ export function apply(ctx, config) {
   let publishedAt = 0;
   let lastDesktopAt = 0;
   const admitted = new Set();
+  let contextTurn;
   const qqTools = new Set(['qq_direct_recent', 'qq_direct_reply', 'qq_direct_revisit', 'read_memory',
     'mcp__memory__search_memory', 'mcp__memory__read_memory_context',
     // ⭐ 2026-11-08 群聊回合也能看图和收藏表情（主人要求：碰到好玩的自己收着用）
@@ -134,8 +137,8 @@ export function apply(ctx, config) {
   }, (args, exec) => {
     const { channel } = current(exec);
     const selected = args.messageId ? store.find(channel, args.messageId) : null;
-    const items = args.messageId ? [selected, selected?.quote && store.find(channel, selected.quote.messageId)] : store.recent(channel, 20);
-    return { text: items.filter(item => item && !item.opportunity).map(item => message(item).content[0].text).join('\n') || '本渠道未找到这条消息。' };
+    const items = args.messageId ? [selected, selected?.quote && store.find(channel, selected.quote.messageId)] : store.recent(channel, 8);
+    return { text: items.filter(item => item && !item.opportunity).map((item, i) => renderQQContext(item, { compact: !args.messageId, safety: i === 0 }).content[0].text).join('\n') || '本渠道未找到这条消息。' };
   });
   writeTool('qq_direct_reply', '在原 QQ 渠道发文字、收藏表情、语音、图片或文件。发出即算回复。多人交错或指代不明时引用原消息。', {
     format: { enum: ['text', 'sticker', 'voice', 'image', 'file'] }, text: { type: 'string', maxLength: 500 },
@@ -200,7 +203,6 @@ export function apply(ctx, config) {
     if (incoming && (String(agent.id) !== target || !allowed(incoming.channel)
       || (incoming.qzone && Date.now() >= incoming.expiresAt))) return { kind: 'reject' };
     if (String(agent.id) !== target) return decision;
-    const items = store.pending(250);
     if (incoming) scene = { id: incoming.id, channel: incoming.channel, turn, senderId: incoming.senderId, qzone: incoming.qzone === true };
     else if (scene?.turn !== turn) scene = undefined;
     if (!scene && step === 1) lastDesktopAt = Date.now();
@@ -209,22 +211,38 @@ export function apply(ctx, config) {
       if (!agent.inbox.nextTurn.some(queued => queued.id === input.id)) agent.followup(input);
       return false;
     });
-    const passive = [];
+    if (step !== 1 || contextTurn === turn || contextBudgetChars === 0 || scene?.qzone) return { ...decision, messages: inputs };
     const bridge = store.runtime('bridge') ?? null;
-    for (const item of items) {
-      if (!allowed(item.channel, bridge)) continue;
-      if (!item.wake && !admitted.has(item.id)) passive.push(message(item));
-      const previewId = PREVIEW + item.id;
-      if (!scene && step === 1 && item.wake && !item.opportunity && !admitted.has(previewId) && !store.sawContext(item.id)) {
-        passive.push({ ...message(item), id: previewId });
-      }
+    const channels = (scene ? [scene.channel] : Array.isArray(bridge?.channels) ? bridge.channels : [])
+      .filter(channel => allowed(channel, bridge));
+    const since = Date.now() - 2 * 60 * 60_000;
+    const candidates = channels.flatMap(channel => store.contextCandidates(channel, since, !scene, 12))
+      .sort((a, b) => (!scene ? Number(b.channel.startsWith('private:')) - Number(a.channel.startsWith('private:')) : 0) || b.at - a.at);
+    const existing = new Set(inputs.map(input => input.id));
+    const passive = [];
+    let used = QQ_SAFETY.length + 1;
+    for (const item of candidates) {
+      if (passive.length >= 12) break;
+      const id = item.wake ? PREVIEW + item.id : item.id;
+      if (existing.has(item.id) || existing.has(id) || admitted.has(id)) continue;
+      // Put the boundary in the first actual text block, not in source metadata.
+      const block = renderQQContext(item, { compact: true, safety: false });
+      const length = block.content[0].text.length;
+      if (used + length > contextBudgetChars) continue;
+      used += length;
+      passive.push({ item, block: { ...block, id } });
     }
-    return { ...decision, messages: step === 1 || !scene ? [...passive, ...inputs] : inputs };
+    if (passive.length === 0) return { ...decision, messages: inputs };
+    contextTurn = turn;
+    const selected = passive.sort((a, b) => a.item.at - b.item.at).map(row => row.block);
+    selected[0].content[0].text = QQ_SAFETY + '\n' + selected[0].content[0].text;
+    return { ...decision, messages: [...selected, ...inputs] };
   });
 
   ctx.on('session/event', (session, event) => {
     if (String(session.id) !== target) return;
     if (event.type === 'turn/end') {
+      contextTurn = undefined;
       if (!scene) lastDesktopAt = Date.now();
       scene = undefined;
       bindWhenIdle();

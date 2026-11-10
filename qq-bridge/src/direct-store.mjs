@@ -99,6 +99,11 @@ export function openDirectStore(filename) {
     ) ORDER BY at DESC, seq DESC LIMIT ? OFFSET ?`);
   const unreadMessages = db.prepare(`SELECT payload FROM input WHERE channel=? AND consumed=0
     AND json_extract(payload, '$.opportunity') IS NULL ORDER BY seq DESC LIMIT ?`);
+  const contextCandidates = db.prepare(`SELECT payload FROM input
+    WHERE channel=? AND consumed=0 AND json_extract(payload, '$.opportunity') IS NULL
+      AND json_extract(payload, '$.at') >= ?
+      AND (wake=0 OR (? AND NOT EXISTS (SELECT 1 FROM context_seen WHERE context_seen.id=input.id)))
+    ORDER BY seq DESC LIMIT ?`);
   const unreadCount = db.prepare(`SELECT count(*) AS total FROM input WHERE channel=? AND consumed=0
     AND json_extract(payload, '$.opportunity') IS NULL`);
   const seenForward = db.prepare(`SELECT 1 FROM input WHERE channel=? AND (
@@ -129,6 +134,8 @@ export function openDirectStore(filename) {
     recent: (channel, limit = 12) => byChannel.all(channel, limit).map(parse).reverse(),
     recentMessages: (channel, limit, offset) => recentMessages.all(channel, channel, limit, offset).map(parse).reverse(),
     unreadMessages: (channel, limit) => unreadMessages.all(channel, limit).map(parse).reverse(),
+    contextCandidates: (channel, since, previews, limit) =>
+      contextCandidates.all(channel, since, Number(previews), limit).map(parse),
     unreadCount: channel => unreadCount.get(channel).total,
     hasForward: (channel, id) => Boolean(seenForward.get(channel, id, id)),
     mark: id => mark.run(id),

@@ -140,7 +140,7 @@ export function findSticker(entries, ref) {
 }
 
 // 格式化给 AI 看的表情列表；query 会匹配 desc/localNote/tags/usage/id/md5。
-export function formatStickerList(entries, query = '', limit = 48) {
+export function formatStickerList(entries, query = '', limit = 48, offset = 0) {
   const list = (Array.isArray(entries) ? entries : []).map(normalizeStickerEntry).filter(Boolean);
   const q = String(query ?? '').trim().toLowerCase();
   const filtered = q
@@ -150,7 +150,8 @@ export function formatStickerList(entries, query = '', limit = 48) {
       })
     : list;
   const max = Math.max(1, Math.min(500, Number(limit) || 48));
-  const items = filtered.slice(0, max).map((e) => ({
+  const start = Math.max(0, Math.floor(Number(offset) || 0));
+  const items = filtered.slice(start, start + max).map((e) => ({
     id: e.id,
     resId: e.resId,
     md5: e.md5,
@@ -166,7 +167,7 @@ export function formatStickerList(entries, query = '', limit = 48) {
   return {
     total: list.length,
     matched: filtered.length,
-    truncated: filtered.length > max,
+    truncated: filtered.length > start + max,
     stickers: items
   };
 }

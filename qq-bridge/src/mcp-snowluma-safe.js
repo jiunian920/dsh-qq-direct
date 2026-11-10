@@ -904,22 +904,29 @@ if (cfg.socialV2?.tools?.saveFile !== false) {
 if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.listStickers !== false) {
   server.tool(
     'qq_list_stickers',
-    '查询已收藏表情及其 ID、备注、标签和使用记录。按关键词过滤，refresh 可强制同步。',
+    '查收藏表情的 ID 和短标签，支持搜索和分页。',
     {
       key: chatKeySchema,
       token: turnTokenSchema,
       query: z.string().optional().describe('可选搜索词，按备注/本地笔记/标签/用法过滤'),
-      count: z.number().optional().describe('最多返回条数，默认 48，受 socialV2.sticker.maxListCount 配置上限约束（当前通常 100）'),
+      count: z.number().optional().describe('每页条数，默认 8，最多 24'),
+      offset: z.number().int().min(0).optional().describe('从上一页的 nextOffset 继续'),
       refresh: z.boolean().optional().describe('是否强制从 QQ 重新同步收藏表情，默认 false（走缓存）')
     },
-    async ({ key, token, query, count, refresh }) => {
+    async ({ key, token, query, count, offset = 0, refresh }) => {
       try {
         const q = new URLSearchParams({ key });
         if (query) q.set('query', String(query));
-        if (count != null) q.set('count', String(count));
+        q.set('count', String(Math.max(1, Math.min(24, Math.floor(count ?? 8)))));
+        if (offset) q.set('offset', String(offset));
         if (refresh) q.set('refresh', '1');
         const data = await agentApi(`/api/socialV2/sticker-list?${q.toString()}`, { headers: { 'x-agent-token': token } });
-        return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+        const stickers = (data.stickers ?? []).map(item => ({
+          id: item.id, desc: String(item.localNote || item.desc || item.tags?.[0] || '').slice(0, 48),
+        }));
+        const page = { ok: data.ok, matched: data.matched, stickers };
+        if (data.truncated && stickers.length) page.nextOffset = offset + stickers.length;
+        return { content: [{ type: 'text', text: JSON.stringify(page) }] };
       } catch (error) {
         return { content: [{ type: 'text', text: `获取表情列表失败：${error?.message ?? error}` }], isError: true };
       }

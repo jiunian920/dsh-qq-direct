@@ -554,7 +554,12 @@ async function main() {
   async function collectStickerV2(key, messageRef, remark) {
     const assertSendAllowed = captureSendGuard(key);
     const st = getSocialV2State(key);
-    const found = (st.recentMessages || []).find((m) => m && (String(m.seq) === String(messageRef) || (m.messageId && String(m.messageId) === String(messageRef))));
+    let found = (st.recentMessages || []).find((m) => m && (String(m.seq) === String(messageRef) || (m.messageId && String(m.messageId) === String(messageRef))));
+    if (!found && directStore) {
+      const item = directStore.find(key, messageRef);
+      const media = (item?.attachments ?? []).filter(part => part?.kind === 'image' || part?.kind === 'face');
+      if (media.length) found = { messageId: item.messageId, isSelf: false, media };
+    }
     if (!found) throw new Error('找不到这条消息，请确认 messageId/seq 有效且属于当前会话');
     if (found.isSelf) throw new Error('不能收藏自己发的表情，只能收藏群友发的');
     const mediaList = Array.isArray(found.media) ? found.media : [];
@@ -3435,7 +3440,7 @@ async function main() {
           }
           try {
             const synced = await syncStickerLibrary(force);
-            const list = formatStickerList(synced?.entries ?? stickerEntries, query, count);
+            const list = formatStickerList(synced?.entries ?? stickerEntries, query, count, url.searchParams.get('offset'));
             sendJson({ ok: true, key, ...list, syncedAt: synced?.syncedAt ?? stickerSyncedAt, fromCache: synced?.fromCache ?? false });
           } catch (error) {
             sendJson({ ok: false, error: `获取表情列表失败：${error?.message ?? error}` }, 500);

@@ -43,6 +43,7 @@ export function createDirectRuntime({
   }
 
   function directSlangHint(key, text) {
+    if (cfg.slang?.enabled === false) return '';
     const normalize = value => value.normalize('NFKC').toLowerCase().replace(/[\s\p{P}]+/gu, '');
     const sentence = normalize(text);
     const known = slangEntries().filter(entry => entry.status === SLANG_STATUS.CONFIRMED && entry.meaning

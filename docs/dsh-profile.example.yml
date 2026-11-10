@@ -5,6 +5,8 @@
       config:
         sessionId: '<existing-session-id>'
         database: 'C:/QQWorkbench/qq-bridge/state/direct-qq.sqlite3'
+        qqDirect:
+          contextBudgetChars: 4000 # 0 disables optional context, trigger messages still enter.
         # Optional. Uncomment and match the intended desktop workspace and preset.
         # followDesktop:
         #   cwd: 'C:/QQWorkbench'

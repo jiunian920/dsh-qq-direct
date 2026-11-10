@@ -5,10 +5,17 @@ import { bridgeHarness } from './audit-bridge-harness.mjs';
 
 const sessionId = 'session-direct-fixture';
 const sends = [];
+const collectCalls = [];
+const image = Buffer.from('89504e470d0a1a0a00000000', 'hex');
 let sequence = 300;
 const h = await bridgeHarness({
   config: { directSession: { enabled: true, sessionId } },
-  globals: { fetch: async (url, request) => {
+  bot: { async request(action, params) {
+    collectCalls.push({ action, params });
+    if (action === 'add_custom_face') return { status: 'ok', retcode: 0, data: { emoji_id: 'fixture-collected' } };
+    return { status: 'ok', retcode: 0, data: [{ emoji_id: 'fixture-sticker', url: 'https://public.invalid/sticker' }] };
+  } },
+  globals: { safeFetchBuffer: async () => ({ buffer: image }), fetch: async (url, request) => {
     sends.push({ action: new URL(url).pathname, body: JSON.parse(request.body) });
     return { ok: true, json: async () => ({ status: 'ok', retcode: 0, data: { message_id: ++sequence } }) };
   } },
@@ -27,6 +34,14 @@ try {
   assert.equal(h.calls.created.length, 0);
   assert.equal(h.calls.sent.length, 0);
 
+  h.directStore.append({
+    id: 'qq:group:456:808', channel: 'group:456', messageId: '808', senderId: '12', at: Date.now(),
+    text: '', wake: false, attachments: [{ kind: 'image', url: 'https://public.invalid/fixture.png' }],
+  });
+  await assert.rejects(h.collectStickerV2('private:123', '808'), /找不到这条消息/);
+  const collected = await h.collectStickerV2('group:456', '808');
+  assert.equal(collected.emojiId, 'fixture-collected');
+  assert.equal(collectCalls.find(x => x.action === 'add_custom_face').params.file, 'base64://' + image.toString('base64'));
   const route = { sessionId, trigger: 'qq:group:456:-5', expires: Date.now() + 60_000 };
   const send = async (params, channel = 'group:456') => {
     const id = h.directStore.enqueue(channel, { ...route, ...params });

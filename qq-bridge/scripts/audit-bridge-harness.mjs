@@ -72,7 +72,7 @@ export async function bridgeHarness({ config = {}, savedState, globals = {}, bot
   source = source.replace('  bot.onPrivateMessage(async (event) => {', `
   return {
     ensureSession, ensureSlangLearnerSession, resolvePresetName, deliverPrompt, drainPromptQueue,
-    sendToQQ, sendBurstToQQ, auditAndSend, sendStickerV2, handleIncoming, startConsoleServer, cfg, state, api, promptQueues,
+    sendToQQ, sendBurstToQQ, auditAndSend, sendStickerV2, collectStickerV2, handleIncoming, startConsoleServer, cfg, state, api, promptQueues,
     directStore, sendDirect, directQzoneOpportunity,
     setMode(value) { currentMode = value; },
     setReady(value) { dshReady = value; },
