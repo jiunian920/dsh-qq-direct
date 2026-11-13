@@ -105,8 +105,6 @@ export function createDirectRuntime({
       const [kind, id] = job.channel.split(':');
       const selected = job.replyTo ? directStore.find(job.channel, job.replyTo) : null;
       const { replyToMessageId, atUserId } = replyTarget(job.channel, selected, job);
-      // ⭐ 2026-11-08 语音（会乱码）、表情（占地方）、图片都不带引用，群聊校验对它们豁免
-      if (kind === 'group' && !replyToMessageId && job.broadcast !== true && job.format !== 'voice' && job.format !== 'sticker' && job.format !== 'image') throw new Error('请核对原消息和发送者，或明确选择面向全群。');
       const body = String(job.text ?? '').trim();
       if (body && (redactKnownTokensOnly(body) !== body || redactSensitiveText(body) !== body)) throw new Error('消息含疑似凭据。');
       let data;

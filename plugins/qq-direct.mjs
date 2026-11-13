@@ -148,7 +148,7 @@ export function apply(ctx, config) {
     stickerId: { type: 'string', maxLength: 150 }, mood: { type: 'string', maxLength: 40 },
     replyTo: { type: 'string', maxLength: 24 }, toSender: { type: 'string', maxLength: 24 }, mention: { type: 'boolean' },
     replyToCurrent: { type: 'boolean', description: '已核对说话人后，引用触发当前回合的原句。回复其他人请填原消息 ID 和发送者 ID。' },
-    broadcast: { type: 'boolean', description: '仅当你要面向全群发言，而非回答某人时填 true' },
+    broadcast: { type: 'boolean', description: '可选的面向全群发言标记。普通群聊可以直接发文字。' },
     final: { type: 'boolean', description: '仅当本轮全部事项已完成、这是最后一条回复时填 true。确认送达后结束本轮。仍需发多条或继续处理时留空。' },
     atUserId: { type: 'string', maxLength: 24, description: '群聊时 @ 某位群成员的 QQ 号（不要填 all）' },
   }, async (args, exec) => {
@@ -160,8 +160,6 @@ export function apply(ctx, config) {
       const at = String(args.atUserId).trim();
       if (!/^\d+$/.test(at)) throw new Error('atUserId 必须是正整数 QQ 号（不能是 all）');
       payload.atUserId = at;
-      // 只点名、又没引用原句 → 桥会当成「没明确对象」拒发，这里补一个面向全群
-      if (!payload.replyTo && !payload.broadcast) payload.broadcast = true;
     }
     // ⭐ 2026-11-08 可选跨渠道：主人私聊 ↔ 白名单群 互相发；别的渠道一律不许
     const outChannel = args.channel ? String(args.channel) : active.channel;

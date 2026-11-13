@@ -72,7 +72,11 @@ try {
   }, 20);
   assert.equal((await send({ format: 'voice', text: '晚安', replyTo: '-6', toSender: '13' })).state, 'sent');
   assert.deepEqual(sends[2].body.message.map(part => part.type), ['record']);
-  assert.equal((await send({ format: 'text', text: '面向群' })).state, 'failed');
+  assert.equal((await send({ format: 'text', text: '普通群聊' })).state, 'sent');
+  assert.deepEqual(sends.at(-1).body.message.map(part => part.type), ['text']);
+  assert.equal((await send({ format: 'text', text: '单独点名', atUserId: '13' })).state, 'sent');
+  assert.deepEqual(sends.at(-1).body.message.map(part => part.type), ['at', 'text']);
+  assert.equal(String(sends.at(-1).body.message[0].data.qq), '13');
   assert.equal((await send({ format: 'text', text: '面向群', broadcast: true })).state, 'sent');
   const exportsDir = path.join(h.temp, 'state', 'exports');
   fs.mkdirSync(exportsDir);
@@ -88,7 +92,7 @@ try {
   assert.equal(sends.at(-1).body.message[0].type, 'image');
   const filePath = path.join(exportsDir, 'readme.txt');
   fs.writeFileSync(filePath, 'file fixture');
-  assert.equal((await send({ ...owner, format: 'file', filePath, broadcast: true })).state, 'sent');
+  assert.equal((await send({ ...owner, format: 'file', filePath })).state, 'sent');
   assert.equal(sends.at(-1).body.message[0].type, 'file');
   const secretPath = path.join(exportsDir, 'fixture.pem');
   fs.writeFileSync(secretPath, 'fake sensitive file fixture');

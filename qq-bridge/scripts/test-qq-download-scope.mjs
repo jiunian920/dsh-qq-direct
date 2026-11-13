@@ -11,7 +11,7 @@ let downloads = 0;
 const args = { key: 'group:456', messageId: '-12', token: 'fixture', savePath: 'sample.txt' };
 const deps = { directory, async authorizeRead(key, token) { assert.deepEqual([key, token], [args.key, args.token]); },
   async onebot() { return { group_id: 456, message: [{ type: 'file', data: { url: 'https://example.org/file.txt' } }] }; },
-  async download(url, limit) { assert.equal(url, 'https://example.org/file.txt'); assert.equal(limit, 32 * 1024 * 1024); downloads++; return { buffer: Buffer.from('test') }; }
+  async download(url, limit) { assert.equal(url, 'https://example.org/file.txt'); assert.equal(limit, 100 * 1024 * 1024); downloads++; return { buffer: Buffer.from('test') }; }
 };
 try {
   await assert.rejects(saveQQMedia(args, { ...deps, async onebot() { return { group_id: 457 }; } }), /不属于/);

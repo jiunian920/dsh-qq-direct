@@ -30,16 +30,17 @@ const agents = new Map([[initial, old], [next, fresh]]);
 
 function mount(followDesktop, qqDirect) {
   const handlers = new Map();
+  const tools = new Map();
   let guard;
   let dispose;
   apply({
     agents,
-    tools: { register() {}, guard(fn) { guard = fn; } },
+    tools: { register(tool) { tools.set(tool.name, tool); }, guard(fn) { guard = fn; } },
     on(name, fn) { handlers.set(name, fn); },
     effect(fn) { dispose = fn(); },
     setInterval() {},
   }, { database: db, sessionId: initial, followDesktop, qqDirect });
-  return { handlers, guard, dispose };
+  return { handlers, tools, guard, dispose };
 }
 
 const group = 'group:456';
@@ -78,6 +79,21 @@ try {
   offer(fresh);
   assert.equal(bound(), initial, 'active QQ turn retains its binding');
   assert.match(plugin.guard({ agent: old, name: 'shell' }), /不授予电脑操作/);
+
+  const reply = plugin.tools.get('qq_direct_reply');
+  assert.equal(reply.parameters.properties.final.type, 'boolean');
+  let concluded = 0;
+  const replyContext = { agent: old, concludeTurn() { concluded++; } };
+  for (const [final, status] of [[undefined, 'sent'], [true, 'unknown'], [true, 'failed'], [true, 'sent']]) {
+    const pending = reply.execute({ format: 'text', text: 'fixture', replyToCurrent: true, final }, replyContext);
+    const job = store.take();
+    assert.equal(job.final, undefined, 'final is local to DSH');
+    assert.equal(concluded, 0, 'do not end the turn before the delivery receipt');
+    store.finish(job.id, status, { messageId: '901' });
+    if (status === 'failed') await assert.rejects(pending, /发送未完成/);
+    else assert.match((await pending).text, status === 'sent' ? /已确认发送/ : /待核实/);
+  }
+  assert.equal(concluded, 1, 'only a confirmed final reply ends the turn');
 
   let finishVoice;
   const runtime = createDirectRuntime({
