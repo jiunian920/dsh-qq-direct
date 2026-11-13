@@ -140,7 +140,7 @@ export function apply(ctx, config) {
     const items = args.messageId ? [selected, selected?.quote && store.find(channel, selected.quote.messageId)] : store.recent(channel, 8);
     return { text: items.filter(item => item && !item.opportunity).map((item, i) => renderQQContext(item, { compact: !args.messageId, safety: i === 0 }).content[0].text).join('\n') || '本渠道未找到这条消息。' };
   });
-  writeTool('qq_direct_reply', '在原 QQ 渠道发文字、收藏表情、语音、图片或文件。发出即算回复。多人交错或指代不明时引用原消息。', {
+  writeTool('qq_direct_reply', '在原 QQ 渠道发文字、收藏表情、语音、图片或文件。多人交错或指代不明时引用原消息。最后一条发言填 final:true。', {
     format: { enum: ['text', 'sticker', 'voice', 'image', 'file'] }, text: { type: 'string', maxLength: 500 },
     imagePath: { type: 'string', maxLength: 500, description: '批准目录 state/exports 内的图片路径' },
     filePath: { type: 'string', maxLength: 500, description: '批准目录 state/exports 内的文件路径' },
@@ -149,10 +149,20 @@ export function apply(ctx, config) {
     replyTo: { type: 'string', maxLength: 24 }, toSender: { type: 'string', maxLength: 24 }, mention: { type: 'boolean' },
     replyToCurrent: { type: 'boolean', description: '已核对说话人后，引用触发当前回合的原句。回复其他人请填原消息 ID 和发送者 ID。' },
     broadcast: { type: 'boolean', description: '仅当你要面向全群发言，而非回答某人时填 true' },
+    final: { type: 'boolean', description: '仅当本轮全部事项已完成、这是最后一条回复时填 true。确认送达后结束本轮。仍需发多条或继续处理时留空。' },
+    atUserId: { type: 'string', maxLength: 24, description: '群聊时 @ 某位群成员的 QQ 号（不要填 all）' },
   }, async (args, exec) => {
     const active = current(exec);
     exec?.signal?.throwIfAborted();
-    const payload = { ...args };
+    const { final, ...payload } = args;
+    // ⭐ 2026-11-12：群聊 @ 指定的人（桥侧支持 atUserId，插件以前没透传）
+    if (args.atUserId !== undefined && args.atUserId !== null && String(args.atUserId).trim() !== '') {
+      const at = String(args.atUserId).trim();
+      if (!/^\d+$/.test(at)) throw new Error('atUserId 必须是正整数 QQ 号（不能是 all）');
+      payload.atUserId = at;
+      // 只点名、又没引用原句 → 桥会当成「没明确对象」拒发，这里补一个面向全群
+      if (!payload.replyTo && !payload.broadcast) payload.broadcast = true;
+    }
     // ⭐ 2026-11-08 可选跨渠道：主人私聊 ↔ 白名单群 互相发；别的渠道一律不许
     const outChannel = args.channel ? String(args.channel) : active.channel;
     assertDirectSend(active, outChannel, args.format, ownerId());
@@ -178,7 +188,10 @@ export function apply(ctx, config) {
       while (Date.now() < until) {
         exec?.signal?.throwIfAborted();
         const result = store.result(id);
-        if (result?.state === 'sent') return { text: `QQ 已确认发送，消息 ID：${result.messageId ?? '网关未提供'}` };
+        if (result?.state === 'sent') {
+          if (final === true) exec.concludeTurn?.();
+          return { text: `QQ 已确认发送，消息 ID：${result.messageId ?? '网关未提供'}` };
+        }
         if (result?.state === 'failed') throw new Error('QQ 发送未完成，诊断见本机桥接日志。');
         if (result?.state === 'unknown') return { text: '发送结果待核实。请先查聊天记录，避免重复发送。' };
         await new Promise(resolve => setTimeout(resolve, 180));

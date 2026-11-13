@@ -29,7 +29,8 @@ export async function saveQQMedia({ key, messageId, savePath, token }, { directo
     .replace(/[^\w.\-\u4e00-\u9fa5]/g, '_').slice(0, 80).replace(/[. ]+$/, '');
   const output = savePath ?? `qq-${randomUUID()}-${name || 'attachment'}`;
   checkedMediaPath(directory, output, { newFile: true });
-  const { buffer } = await download(url, 32 * 1024 * 1024);
+  // ⭐ 2026-11-10 主人定：下载上限 32 MiB → 100 MiB（只有主人发起的回合能下载，风险可控）
+  const { buffer } = await download(url, 100 * 1024 * 1024);
   const dest = checkedMediaPath(directory, output, { newFile: true });
   fs.writeFileSync(dest, buffer, { flag: 'wx' });
   return { dest, bytes: buffer.length };
