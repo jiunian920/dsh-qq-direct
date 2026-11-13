@@ -51,12 +51,23 @@ export function directEvent(channel, event, text, quote, wake, hints = '') {
   };
 }
 
-export function replyTarget(channel, selected, { replyTo, toSender, mention = false }) {
-  if (!replyTo && !toSender && !mention) return {};
-  if (!selected || selected.channel !== channel || selected.messageId !== replyTo || selected.senderId !== toSender) {
-    throw new Error('说话人与原消息对不上。请重新核对原句和发送者 ID。');
+export function replyTarget(channel, selected, { replyTo, toSender, mention = false, atUserId } = {}) {
+  // 2026-11-12：支持「只 @ 指定的人、不引用」。
+  // 原来 atUserId 根本不在解构里 —— 插件传进来会被直接丢掉（消息发得出去，但没有 @ 段）；
+  // 而 mention 也必须配着引用才不抛错。
+  const wantAt = atUserId !== undefined && atUserId !== null && String(atUserId).trim() !== '';
+  if (!replyTo && !toSender && !mention && !wantAt) return {};
+  if (replyTo || toSender) {
+    if (!selected || selected.channel !== channel || selected.messageId !== replyTo || selected.senderId !== toSender) {
+      throw new Error('说话人与原消息对不上。请重新核对原句和发送者 ID。');
+    }
   }
-  return { replyToMessageId: replyTo, atUserId: mention && channel.startsWith('group:') ? selected.senderId : null };
+  let at = null;
+  if (channel.startsWith('group:')) {
+    if (wantAt) at = String(atUserId).trim();
+    else if (mention && selected) at = selected.senderId;
+  }
+  return { replyToMessageId: replyTo || null, atUserId: at };
 }
 
 export function directSessionBinding(store, configuredSessionId) {
