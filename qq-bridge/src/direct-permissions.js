@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export function assertDirectSend(origin, destination, format, ownerId) {
-  if (!origin?.channel || origin.qzone) throw new Error('当前回合不能发送 QQ 聊天消息。');
+  if (!origin?.channel || origin.qzone || origin.free) throw new Error('当前回合不能发送 QQ 聊天消息。');
   const owner = ownerId != null && String(ownerId) !== '' && String(origin.senderId) === String(ownerId);
   if (!owner && (destination !== origin.channel || !['text', 'sticker', 'voice'].includes(format))) {
     throw new Error('只有主人发起的回合可以发送本地图片、文件或跨渠道发言。');

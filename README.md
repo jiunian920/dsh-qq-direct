@@ -18,6 +18,8 @@
 - [权限设计与复建加固](./docs/ARCHITECTURE.md#security)
 - [当前能力与验证层级](./docs/ARCHITECTURE.md#verification)
 
+升级现有安装可参阅 [v0.1.6 更新说明](./docs/UPDATE-0.1.6.md)。
+
 ## 项目来源与致谢
 
 **上游代码。** 本项目基于 GitHub 用户 `Derpyu520` 与贡献者维护的 `qq-bridge` 深度改造。QQ 桥接和 MCP 工具继承了上游实现。在此基础上，本项目扩展了桌面、私聊与白名单群共用一个已有 DSH 会话，以及持久投递、逐条记忆同步和按回合校验发言权限。 [Derpyu520/qq-bridge](https://github.com/Derpyu520/qq-bridge)

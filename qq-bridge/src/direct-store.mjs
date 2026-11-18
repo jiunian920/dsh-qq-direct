@@ -51,10 +51,10 @@ export function directEvent(channel, event, text, quote, wake, hints = '') {
   };
 }
 
+// 2026-11-12 改：支持「只 @ 指定的人、不引用」。
+// 原来只认 { replyTo, toSender, mention }，`atUserId` 根本不在解构里 ——
+// 插件传进来会被直接丢掉（消息发得出去，但没有 @ 段）；而 mention 也必须配着引用才不抛错。
 export function replyTarget(channel, selected, { replyTo, toSender, mention = false, atUserId } = {}) {
-  // 2026-11-12：支持「只 @ 指定的人、不引用」。
-  // 原来 atUserId 根本不在解构里 —— 插件传进来会被直接丢掉（消息发得出去，但没有 @ 段）；
-  // 而 mention 也必须配着引用才不抛错。
   const wantAt = atUserId !== undefined && atUserId !== null && String(atUserId).trim() !== '';
   if (!replyTo && !toSender && !mention && !wantAt) return {};
   if (replyTo || toSender) {
@@ -88,6 +88,10 @@ export function openDirectStore(filename) {
       wake INTEGER NOT NULL, payload TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0);
     CREATE INDEX IF NOT EXISTS input_pending ON input(consumed, seq);
     CREATE INDEX IF NOT EXISTS input_channel_seq ON input(channel, seq);
+    CREATE INDEX IF NOT EXISTS input_automatic_observation ON input(seq DESC) WHERE id GLOB 'qq:check:auto:*';
+    CREATE INDEX IF NOT EXISTS input_free_time ON input(seq DESC) WHERE id GLOB 'qq:free:*';
+    CREATE TABLE IF NOT EXISTS desktop_group_draft (
+      id TEXT PRIMARY KEY, turn_key TEXT NOT NULL UNIQUE, payload TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS outgoing (
       seq INTEGER PRIMARY KEY, id TEXT UNIQUE NOT NULL, channel TEXT NOT NULL,
       payload TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', result TEXT);
@@ -98,9 +102,13 @@ export function openDirectStore(filename) {
     CREATE TABLE IF NOT EXISTS context_seen (id TEXT PRIMARY KEY);`);
   const put = db.prepare('INSERT OR IGNORE INTO input(id,channel,wake,payload) VALUES (?,?,?,?)');
   const find = db.prepare('SELECT payload FROM input WHERE id=?');
+  const interveningSpeaker = db.prepare(`SELECT 1 FROM input
+    WHERE channel=? AND seq>(SELECT seq FROM input WHERE id=?) AND json_extract(payload,'$.opportunity') IS NULL
+    AND json_extract(payload,'$.senderId') != ? LIMIT 1`);
   const pending = db.prepare('SELECT payload FROM input WHERE consumed=0 ORDER BY seq LIMIT ?');
   const waking = db.prepare(`SELECT payload FROM input WHERE consumed=0 AND wake=1
-    ORDER BY CASE json_extract(payload, '$.wakeClass') WHEN 'direct' THEN 0 WHEN 'continuation' THEN 1 ELSE 2 END, seq LIMIT 1`);
+    ORDER BY CASE json_extract(payload, '$.wakeClass') WHEN 'direct' THEN 0 WHEN 'continuation' THEN 1
+    ELSE CASE WHEN id GLOB 'qq:free:*' THEN 4 WHEN id GLOB 'qq:check:auto:*' THEN 3 ELSE 2 END END, seq LIMIT 1`);
   const byChannel = db.prepare('SELECT payload FROM input WHERE channel=? ORDER BY seq DESC LIMIT ?');
   const recentMessages = db.prepare(`SELECT payload FROM (
     SELECT payload, json_extract(payload, '$.at') AS at, seq FROM input
@@ -115,6 +123,13 @@ export function openDirectStore(filename) {
       AND json_extract(payload, '$.at') >= ?
       AND (wake=0 OR (? AND NOT EXISTS (SELECT 1 FROM context_seen WHERE context_seen.id=input.id)))
     ORDER BY seq DESC LIMIT ?`);
+  const recentObservations = db.prepare(`SELECT payload, consumed FROM input
+    WHERE id GLOB 'qq:check:auto:*' ORDER BY seq DESC LIMIT ?`);
+  const freeTime = db.prepare(`SELECT payload FROM input WHERE id GLOB 'qq:free:*' ORDER BY seq DESC LIMIT ?`);
+  const observationCandidates = db.prepare(`SELECT payload FROM input WHERE channel=? AND consumed=0 AND wake=0
+    AND seq > COALESCE((SELECT max(seq) FROM input WHERE channel=? AND id GLOB 'qq:check:auto:*'), 0)
+    AND json_extract(payload, '$.at') >= ? ORDER BY seq DESC LIMIT ?`);
+  const observationMessage = db.prepare(`SELECT payload FROM input WHERE id=? AND channel=? AND consumed=0 AND wake=0`);
   const unreadCount = db.prepare(`SELECT count(*) AS total FROM input WHERE channel=? AND consumed=0
     AND json_extract(payload, '$.opportunity') IS NULL`);
   const seenForward = db.prepare(`SELECT 1 FROM input WHERE channel=? AND (
@@ -122,6 +137,8 @@ export function openDirectStore(filename) {
     EXISTS (SELECT 1 FROM json_each(payload, '$.media') WHERE json_extract(value, '$.type')='forward' AND json_extract(value, '$.ref')=?)
     ) LIMIT 1`);
   const mark = db.prepare('UPDATE input SET consumed=1 WHERE id=?');
+  const putDesktopDraft = db.prepare('INSERT OR IGNORE INTO desktop_group_draft VALUES (?,?,?)');
+  const readDesktopDraft = db.prepare('SELECT payload FROM desktop_group_draft WHERE id=?');
   const putSend = db.prepare('INSERT OR IGNORE INTO outgoing(id,channel,payload) VALUES (?,?,?)');
   const nextSend = db.prepare("UPDATE outgoing SET state='sending' WHERE seq=(SELECT seq FROM outgoing WHERE state='pending' ORDER BY seq LIMIT 1) RETURNING id, channel, payload");
   const readSend = db.prepare('SELECT state,result FROM outgoing WHERE id=?');
@@ -140,6 +157,7 @@ export function openDirectStore(filename) {
     append: item => Boolean(put.run(item.id, item.channel, Number(item.wake), JSON.stringify(item)).changes),
     get: id => typeof id === 'string' && id.startsWith('qq:') ? parse(find.get(id)) : null,
     find: (channel, id) => parse(find.get(`qq:${channel}:${id}`)),
+    hasInterveningSpeaker: (channel, original, senderId) => Boolean(interveningSpeaker.get(channel, `qq:${channel}:${original}`, senderId)),
     pending: (limit = 50) => pending.all(limit).map(parse),
     waking: () => parse(waking.get()),
     recent: (channel, limit = 12) => byChannel.all(channel, limit).map(parse).reverse(),
@@ -147,9 +165,32 @@ export function openDirectStore(filename) {
     unreadMessages: (channel, limit) => unreadMessages.all(channel, limit).map(parse).reverse(),
     contextCandidates: (channel, since, previews, limit) =>
       contextCandidates.all(channel, since, Number(previews), limit).map(parse),
+    observationBudget: limit => recentObservations.all(limit).map(row => ({ ...parse(row), consumed: Boolean(row.consumed) })),
+    recentFreeTime: limit => freeTime.all(limit).map(parse),
+    observationCandidates: (channel, since, limit = 12) => observationCandidates.all(channel, channel, since, limit).map(parse),
+    observationContext: item => (Array.isArray(item.evidenceIds) ? item.evidenceIds.slice(0, 6) : [])
+      .filter(id => typeof id === 'string').map(id => parse(observationMessage.get(id, item.channel))).filter(Boolean),
     unreadCount: channel => unreadCount.get(channel).total,
     hasForward: (channel, id) => Boolean(seenForward.get(channel, id, id)),
     mark: id => mark.run(id),
+    desktopDraft: id => parse(readDesktopDraft.get(id)),
+    queueDesktopDraft(draft) {
+      const { id, turnKey, request, sessionId, bindingCreatedAt, expires } = draft;
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const inserted = putDesktopDraft.run(id, turnKey, JSON.stringify(draft)).changes;
+        if (inserted) {
+          const payload = { draftId: id, sessionId, bindingCreatedAt, expires,
+            trigger: `qq:${request.channel}:${request.messageId}` };
+          if (!putSend.run(id, request.channel, JSON.stringify(payload)).changes) throw new Error('草稿发件箱写入冲突。');
+        }
+        db.exec('COMMIT');
+        return Boolean(inserted);
+      } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
+      }
+    },
     enqueue: (channel, payload, id = randomUUID()) => { putSend.run(id, channel, JSON.stringify(payload)); return id; },
     take: () => {
       const row = nextSend.get();

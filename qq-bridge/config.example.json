@@ -10,7 +10,16 @@
     "httpUrl": "http://127.0.0.1:3000",
     "accessToken": ""
   },
-  "directSession": { "enabled": false, "sessionId": "" },
+  "directSession": {
+    "enabled": false,
+    "sessionId": "",
+    "automaticObservation": {
+      "maxPer24Hours": 8,
+      "cooldownMinutes": 20,
+      "freePer24Hours": 0,
+      "topics": ["方舟", "崩铁", "猫咪", "手机", "编程", "音乐"]
+    }
+  },
   "memory": { "enabled": false },
   "voice": { "enabled": false },
   "legacyComputerTasks": { "enabled": false },

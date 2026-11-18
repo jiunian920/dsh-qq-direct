@@ -7683,6 +7683,7 @@ async function main() {
 
   const { start: startDirect, receiveDirect, sendDirect, directQzoneOpportunity, appendDirect } = createDirectRuntime({
     cfg, directStore, directAllowed, exportsDir: path.join(STATE_DIR, 'exports'),
+    observationLogDir: path.join(STATE_DIR, 'observation-history'),
     isPaused: () => socialV2.paused || readRoleState().mode === 'silent',
     ensureChannelState: ensureDirectChannelState,
     slangEntries: () => slangEntries, stickerEntries: () => stickerEntries, stickerEnabled,

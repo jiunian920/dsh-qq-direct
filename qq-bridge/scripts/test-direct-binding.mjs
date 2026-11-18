@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { apply } from '../../plugins/qq-direct.mjs';
 import { directSessionBinding } from '../src/direct-store.mjs';
@@ -45,9 +46,9 @@ function mount(followDesktop, qqDirect) {
 
 const group = 'group:456';
 const id = 'qq:group:456:-4';
-const input = { id, source: { kind: 'qq-direct' } };
+const input = { id, source: { kind: 'qq-direct' }, content: [{ type: 'text', text: 'usage-private-fixture' }] };
 const preStep = plugin => (agent) => plugin.handlers.get('agent/pre-step')(
-  { agent, turn: 'qq-fixture-turn', step: 1 },
+  { agent, turn: 101, step: 1 },
   async () => ({ kind: 'enter', messages: [input] }),
 );
 const bound = () => directSessionBinding(store, initial).sessionId;
@@ -73,7 +74,8 @@ try {
   await h.handleIncoming('group', '456', { message_id: -4, user_id: 12, self_id: 999,
     sender: { nickname: 'fixture' }, message: [{ type: 'text', data: { text: '岸岸，测试' } }] }, h.cfg);
   assert.ok(store.get(id).wake);
-  const heartbeat = sessionId => store.publish('bridge', { sessionId, at: Date.now(), channels: [group, 'private:123'] });
+  const heartbeat = (sessionId, bindingCreatedAt = 0) =>
+    store.publish('bridge', { sessionId, bindingCreatedAt, at: Date.now(), channels: [group, 'private:123'] });
   heartbeat(initial);
   assert.equal((await preStep(plugin)(old)).kind, 'enter');
   offer(fresh);
@@ -88,12 +90,19 @@ try {
     const pending = reply.execute({ format: 'text', text: 'fixture', replyToCurrent: true, final }, replyContext);
     const job = store.take();
     assert.equal(job.final, undefined, 'final is local to DSH');
+    assert.equal(job.bindingCreatedAt, 0);
     assert.equal(concluded, 0, 'do not end the turn before the delivery receipt');
     store.finish(job.id, status, { messageId: '901' });
     if (status === 'failed') await assert.rejects(pending, /发送未完成/);
     else assert.match((await pending).text, status === 'sent' ? /已确认发送/ : /待核实/);
   }
   assert.equal(concluded, 1, 'only a confirmed final reply ends the turn');
+  const event = (type, data) => plugin.handlers.get('session/event')(old.session, { type, data });
+  const usage = { inputTokens: 300, cacheReadTokens: 2000, cacheWriteTokens: 0, outputTokens: 25, totalTokens: 2325 };
+  event('assistant/message', { turn: 101, step: 1, usage });
+  event('assistant/message', { turn: 101, step: 1, usage });
+  event('assistant/message', { turn: 101, step: 2 });
+  event('assistant/message', { turn: 100, step: 1, usage });
 
   let finishVoice;
   const runtime = createDirectRuntime({
@@ -110,7 +119,7 @@ try {
   const fault = new DatabaseSync(db);
   try {
     fault.exec("CREATE TRIGGER deny_binding BEFORE INSERT ON runtime WHEN NEW.name = 'session-binding' BEGIN SELECT RAISE(ABORT, 'fixture write failure'); END");
-    plugin.handlers.get('session/event')(old.session, { type: 'turn/end' });
+    event('turn/end', { turn: 101 });
     assert.equal(bound(), initial, 'a failed write leaves both sides on the old binding');
     assert.equal((await preStep(plugin)(fresh)).kind, 'reject');
     fault.exec('DROP TRIGGER deny_binding');
@@ -122,6 +131,16 @@ try {
   finishVoice('fixture.wav');
   await sending;
   assert.equal(store.result(voice).state, 'failed');
+  const usageText = fs.readFileSync(path.join(h.temp, 'state', 'turn-usage.jsonl'), 'utf8');
+  assert.ok(!usageText.includes('usage-private-fixture'));
+  const measured = JSON.parse(usageText);
+  assert.equal(measured.origin, 'qq-group');
+  assert.equal(measured.modelResponses, 2);
+  assert.equal(measured.measuredResponses, 1);
+  assert.equal(measured.inputTokens, 300);
+  assert.equal(measured.cacheReadTokens, 2000);
+  assert.equal(measured.confirmedReplies, 2);
+  assert.equal(measured.qqInputMessages, 1);
 
   const older = makeAgent('session-fixture-older', { createdAt: stamp - 500 });
   offer(older);
@@ -146,7 +165,15 @@ try {
   }).start();
   bridgeTick();
   assert.equal(store.runtime('bridge').sessionId, next, 'bridge startup uses the persisted binding');
-  assert.ok((await desktopStep()).messages.some(message => message.id === passiveId));
+  const desktopDecision = await desktopStep();
+  assert.ok(desktopDecision.messages.some(message => message.id === 'qq-draft-preview:' + passiveId));
+  const desktopEvent = (type, data) => plugin.handlers.get('session/event')(fresh.session, { type, data });
+  desktopEvent('assistant/message', { turn: 'desktop-fixture-turn', step: 1, usage });
+  desktopEvent('turn/end', { turn: 'desktop-fixture-turn' });
+  const baseline = JSON.parse(fs.readFileSync(path.join(h.temp, 'state', 'turn-usage.jsonl'), 'utf8').trim().split('\n').at(-1));
+  assert.equal(baseline.origin, 'desktop');
+  assert.equal(baseline.measuredResponses, 1);
+  assert.equal(baseline.qqInputMessages, desktopDecision.messages.filter(input => input.source.kind === 'qq-direct').length);
   assert.equal((await preStep(plugin)(fresh)).kind, 'enter');
 
   const send = async sessionId => {
@@ -157,6 +184,16 @@ try {
   assert.equal(await send(initial), 'failed');
   assert.equal(await send(next), 'sent');
   assert.equal(sends.length, 1);
+  const sendVersioned = async bindingCreatedAt => {
+    const job = store.enqueue(group, { ...route, sessionId: next, bindingCreatedAt, format: 'text', text: '版本校验' });
+    await h.sendDirect();
+    return store.result(job).state;
+  };
+  assert.equal(await sendVersioned(stamp), 'failed', 'requires a fresh DSH heartbeat for versioned jobs');
+  store.publish('dsh', { sessionId: next, bindingCreatedAt: stamp, at: Date.now(), available: true });
+  assert.equal(await sendVersioned(stamp - 1), 'failed');
+  assert.equal(await sendVersioned(stamp), 'sent');
+  assert.equal(sends.length, 2);
   plugin.dispose();
   plugin = mount({ cwd: workspace, agentPreset: 'standard' });
   assert.equal((await preStep(plugin)(fresh)).kind, 'enter', 'binding survives plugin restart');
@@ -164,7 +201,7 @@ try {
   plugin.dispose();
   plugin = mount(undefined, { contextBudgetChars: 700 });
   const other = 'group:457';
-  store.publish('bridge', { sessionId: next, at: Date.now(), channels: [group, other, 'private:123'] });
+  store.publish('bridge', { sessionId: next, bindingCreatedAt: stamp, at: Date.now(), channels: [group, other, 'private:123'] });
   const seed = store.get(id);
   for (let i = 0; i < 250; i++) store.append({
     ...seed, id: 'qq:group:457:' + (1000+i), channel: other, messageId: String(1000+i),
