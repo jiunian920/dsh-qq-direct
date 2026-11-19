@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { directEvent, directSessionBinding, replyTarget } from './direct-store.mjs';
-import { groupWake, observationEvidence, scheduledObservationEvidence } from './qq-wake.js';
+import { groupWake } from './qq-wake.js';
 import { SLANG_STATUS } from './slang-learner.js';
 import { assertDirectSend, checkedMediaPath } from './direct-permissions.js';
 import { privateDraftTexts, verifyDesktopDraft } from './desktop-draft.mjs';
@@ -16,16 +16,32 @@ export function createDirectRuntime({
   const directWakeAt = new Map();
   let directMemoryDirty = true;
   const binding = () => directSessionBinding(directStore, cfg.directSession.sessionId);
-  const automatic = cfg.directSession?.automaticObservation;
-  const dailyLimit = Number.isSafeInteger(automatic?.maxPer24Hours) ? Math.max(0, Math.min(24, automatic.maxPer24Hours)) : 8;
-  const cooldownMs = (Number.isSafeInteger(automatic?.cooldownMinutes) ? Math.max(5, Math.min(120, automatic.cooldownMinutes)) : 20) * 60_000;
+  const choiceEnabled = cfg.directSession?.automaticObservation?.autonomousChoice === true;
   const observationStatsKey = 'automatic-observation-stats';
   const minute = 60_000;
-  const day = 24 * 60 * minute;
-  const freeLimit = Number.isSafeInteger(automatic?.freePer24Hours) ? Math.max(0, Math.min(4, automatic.freePer24Hours)) : 0;
-  const topics = (Array.isArray(automatic?.topics) ? automatic.topics : ['方舟', '崩铁', '猫咪', '手机', '编程', '音乐'])
-    .filter(topic => typeof topic === 'string' && topic.trim().length >= 2)
-    .slice(0, 12).map(topic => topic.trim().normalize('NFKC').toLowerCase().slice(0, 24));
+  const clockKey = 'automatic-observation-clock';
+  const savedClock = directStore?.runtime(clockKey);
+  let observationClock = savedClock?.version === 3 ? savedClock
+    : savedClock?.version === 2 ? { ...savedClock, totalScans: 0, emptyScans: 0 } : undefined;
+
+  function setObservationClock(clock, item) {
+    const next = { ...clock, version: 3 };
+    if (item) directStore.commitObservation(clockKey, next, item);
+    else directStore.publish(clockKey, next);
+    observationClock = next;
+  }
+
+  function nextObservationWindow(startAt, changes = {}) {
+    const floorAt = observationClock?.floorAt
+      ?? Math.min(startAt, directStore.runtime('automatic-observation-last-check')?.at ?? startAt - 100 * minute);
+    return { totalScans: 0, emptyScans: 0, ...observationClock, ...changes,
+      floorAt, startAt, nextChanceAt: startAt + 20 * minute };
+  }
+
+  function resetObservationAfterConversation(at, activeObservationId) {
+    directStore.cancelScheduledObservations(activeObservationId);
+    setObservationClock(nextObservationWindow(at + 5 * minute, { emptyScans: 0 }));
+  }
   const observationStats = () => {
     const saved = directStore.runtime(observationStatsKey) ?? {};
     return { ...saved, bySource: saved.bySource ?? { scheduled: {}, activity: {} } };
@@ -33,7 +49,10 @@ export function createDirectRuntime({
 
   function appendDirect(item) {
     const inserted = directStore.append(item);
-    if (inserted) directMemoryDirty = true;
+    if (inserted) {
+      directMemoryDirty = true;
+      if (item.wake && !item.opportunity) resetObservationAfterConversation(Date.now());
+    }
     return inserted;
   }
 
@@ -47,7 +66,7 @@ export function createDirectRuntime({
     const directMention = segments.some(part => part.type === 'at' && String(part.data?.qq) === String(event.self_id))
       || quote?.senderId === String(event.self_id) || /岸岸|岸鲸/.test(body);
     const wakeClass = kind === 'private' ? 'direct' : groupWake({ text: body, replyTo: quote?.messageId,
-      sender: String(event.user_id), recent: directStore.recent(key, 8), lastWake: directWakeAt.get(key), addressed: directMention, topics });
+      sender: String(event.user_id), recent: directStore.recent(key, 8), lastWake: directWakeAt.get(key), addressed: directMention, allowOpportunity: false });
     const wake = !isPaused() && (wakeClass === 'direct' || wakeClass === 'continuation');
     const context = [body, quote?.text].filter(Boolean).join('\n');
     const hints = wake ? [buildMemeHint(context), directSlangHint(key, context), directStickerHint(context)].filter(Boolean).join('\n') : '';
@@ -56,7 +75,6 @@ export function createDirectRuntime({
     if (item && appendDirect(item)) {
       if (wake && wakeClass !== 'continuation') directWakeAt.set(key, Date.now());
       ensureChannelState(key);
-      if (wakeClass === 'opportunity' && !isPaused()) automaticObservation('activity', [key], item.id);
     }
   }
 
@@ -97,57 +115,64 @@ export function createDirectRuntime({
     }
   }
 
-  function automaticObservation(source, channels, focusId, now = Date.now(), since = now - 20 * minute) {
-    const record = reason => {
-      const stats = observationStats();
-      const key = reason === 'queued' ? source : reason;
-      const sourceCounts = stats.bySource[source];
-      const bySource = { ...stats.bySource, [source]: { ...sourceCounts, [reason]: (sourceCounts[reason] ?? 0) + 1 } };
-      directStore.publish(observationStatsKey, { ...stats, [key]: (stats[key] ?? 0) + 1,
-        bySource, lastAt: now, lastResult: key, lastSource: source });
-      logObservation(source, reason, now);
-      return reason;
-    };
-    if (dailyLimit === 0) return record('disabled');
-    if (isPaused()) return record('paused');
-    const active = binding();
-    const host = directStore.runtime('dsh');
-    if (!host?.available || !host.supportsObservationEvidence || host.sessionId !== active.sessionId
-      || (host.bindingCreatedAt ?? 0) !== active.createdAt
-      || !Number.isFinite(host.at) || now - host.at >= 10_000) return record('unavailable');
-    const recent = directStore.observationBudget(dailyLimit);
-    if (recent.some(item => !item.consumed && item.expiresAt > now)) return record('pending');
-    if (recent[0] && now - recent[0].at < cooldownMs) return record('cooldown');
-    if (recent.length >= dailyLimit && now - recent.at(-1).at < 24 * 60 * 60_000) return record('dailyCap');
-    const candidates = channels.filter(channel => channel.startsWith('group:') && directAllowed(channel))
-      .map(channel => {
-        const rows = directStore.observationCandidates(channel, since);
-        const evidence = source === 'scheduled' ? scheduledObservationEvidence(rows, topics) : observationEvidence(rows, focusId, topics);
-        return { channel, evidence };
-      })
-      .filter(candidate => candidate.evidence.length);
-    if (!candidates.length) return record('quiet');
-    const { channel, evidence } = candidates[randInt(0, candidates.length - 1)];
-    const context = evidence.map(item => item.text ?? '').join('\n');
-    const id = `qq:check:auto:${crypto.randomUUID()}`;
-    directStore.append({ id, channel, at: now, wake: true, opportunity: true, wakeClass: 'opportunity',
-      expiresAt: now + 4 * 60_000, observationSource: source, evidenceIds: evidence.map(item => item.id), focusId, topics,
-      hints: [buildMemeHint(context), directSlangHint(channel, context), directStickerHint(context)].filter(Boolean).join('\n') });
-    return record('queued');
+  function recordObservation(result, now) {
+    const source = 'scheduled';
+    const stats = observationStats();
+    const key = result === 'queued' ? source : result;
+    const counts = stats.bySource[source];
+    const bySource = { ...stats.bySource, [source]: { ...counts, [result]: (counts[result] ?? 0) + 1 } };
+    directStore.publish(observationStatsKey, { ...stats, [key]: (stats[key] ?? 0) + 1,
+      bySource, lastAt: now, lastResult: key, lastSource: source });
+    logObservation(source, result, now);
   }
 
-  function freeTime(now) {
-    if (!freeLimit || isPaused() || directStore.waking()) return;
+  function activeObservationHost(now, active) {
     const host = directStore.runtime('dsh');
+    return host?.available && host.sessionId === active.sessionId
+      && (host.bindingCreatedAt ?? 0) === active.createdAt
+      && Number.isFinite(host.at) && now - host.at < 10_000 ? host : null;
+  }
+
+  function automaticObservation(now) {
+    const host = activeObservationHost(now, binding());
+    if (!host?.supportsObservationEvidence || !host.supportsAutonomousChoice) return 'unavailable';
+    if (host.readyForObservation === false || directStore.waking()) return 'pending';
+    const candidates = cfg.allow.groups.map(id => `group:${id}`).filter(directAllowed)
+      .map(channel => ({ channel, evidence: directStore.observationCandidates(channel, observationClock.floorAt, 6) }))
+      .filter(candidate => candidate.evidence.length);
+    const selected = candidates.length ? candidates[randInt(0, candidates.length - 1)] : null;
+    let item;
+    if (selected) {
+      const { channel, evidence } = selected;
+      const context = evidence.map(row => row.text ?? '').join('\n');
+      item = { id: `qq:check:auto:${crypto.randomUUID()}`, channel, at: now, wake: true, opportunity: true,
+        wakeClass: 'opportunity', expiresAt: now + 4 * minute, observationSource: 'scheduled', observationVersion: 2,
+        evidenceIds: evidence.map(row => row.id), focusId: evidence[0].id,
+        hints: [buildMemeHint(context), directSlangHint(channel, context), directStickerHint(context)].filter(Boolean).join('\n') };
+    }
+    const totalScans = choiceEnabled ? observationClock.totalScans + 1 : 0;
+    const emptyScans = choiceEnabled && !item ? observationClock.emptyScans + 1 : 0;
+    const choiceDue = emptyScans >= 2
+      ? totalScans >= 5 ? 'both' : 'two-empty'
+      : totalScans >= 5 ? 'five-scans' : null;
+    setObservationClock(nextObservationWindow(now, { totalScans, emptyScans, choiceDue }), item);
+    directStore.publish('automatic-observation-last-check', { at: now });
+    return item ? 'queued' : 'quiet';
+  }
+
+  function queueAutonomousChoice(now) {
     const active = binding();
+    const host = activeObservationHost(now, active);
     const channel = `private:${cfg.ownerQQ}`;
-    if (!host?.available || !host.supportsFreeTime || host.sessionId !== active.sessionId
-      || (host.bindingCreatedAt ?? 0) !== active.createdAt || now - host.at >= 10_000 || !directAllowed(channel)) return;
-    const recent = directStore.recentFreeTime(freeLimit);
-    if (recent.length >= freeLimit && now - recent.at(-1).at < day) return;
-    const id = `qq:free:${crypto.randomUUID()}`;
-    directStore.append({ id, channel, at: now, wake: true, opportunity: true, free: true,
-      expiresAt: now + 4 * minute, sessionId: active.sessionId, bindingCreatedAt: active.createdAt });
+    if (!host?.supportsAutonomousChoice || host.readyForObservation === false
+      || !directAllowed(channel) || directStore.waking()) return;
+    const channels = [channel, ...cfg.allow.groups.map(id => `group:${id}`).filter(directAllowed)];
+    const stickers = directStickerHint('');
+    const item = { id: `qq:free:${crypto.randomUUID()}`, channel, at: now, wake: true, opportunity: true, free: true,
+      autonomousChoice: true, choiceReason: observationClock.choiceDue, expiresAt: now + 4 * minute,
+      sessionId: active.sessionId, bindingCreatedAt: active.createdAt,
+      hints: ['可用 QQ 渠道：' + channels.join('、'), stickers].filter(Boolean).join('\n') };
+    setObservationClock({ ...observationClock, totalScans: 0, emptyScans: 0, choiceDue: null }, item);
     logObservation('free', 'queued', now);
   }
 
@@ -205,6 +230,7 @@ export function createDirectRuntime({
         || (trigger.channel !== job.channel && !crossAllowed.includes(job.channel))) {
         throw new Error('发送请求与主会话或原 QQ 渠道不匹配。');
       }
+      if (trigger.autonomousChoice && !choiceEnabled) throw new Error('自主选择已关闭。');
       if (!fromDraft) assertDirectSend(trigger, job.channel, job.format, cfg.ownerQQ);
       const [kind, id] = job.channel.split(':');
       const selected = job.replyTo ? directStore.find(job.channel, job.replyTo) : null;
@@ -226,7 +252,7 @@ export function createDirectRuntime({
         if (!stickerEnabled() || cfg.socialV2?.tools?.sendSticker === false || !job.stickerId) throw new Error('没有可用的收藏表情。');
         // ⭐ 2026-11-08 表情不带引用（引用会占很大一块地方，主人要求）
         const sent = await sendStickerV2(job.channel, job.stickerId, {
-          assertDirectAllowed: verifyTransport, onTransportStart: () => { mayHaveSent = true; }
+          ledgerSend: true, assertDirectAllowed: verifyTransport, onTransportStart: () => { mayHaveSent = true; }
         });
         data = { message_id: sent.messageId };
         output = { ...output, text: `[表情包:${sent.entry?.desc || sent.entry?.localNote || '收藏表情'}]`, stickerId: job.stickerId };
@@ -268,6 +294,7 @@ export function createDirectRuntime({
       const sentAt = Date.now();
       directStore.finish(job.id, 'sent', { ...output, messageId: data?.message_id ?? null, at: sentAt });
       if (trigger.observationSource != null && trigger.channel === job.channel) directWakeAt.set(job.channel, sentAt);
+      resetObservationAfterConversation(sentAt, trigger.observationSource != null ? trigger.id : undefined);
     } catch (error) {
       const state = mayHaveSent && !error?.definitive ? 'unknown' : 'failed';
       const detail = redactSensitiveText(error?.message ?? String(error)).slice(0, 240);
@@ -287,8 +314,10 @@ export function createDirectRuntime({
     schedule(() => { void directQzoneOpportunity().catch(() => log('[qq-direct] 动态资料暂不可用，稍后复查')); }, 60_000).unref();
     let sending = false;
     let archiving = false;
-    let nextCheck = Date.now() + randInt(20, 50) * minute;
-    let lastCheck = directStore.runtime('automatic-observation-last-check')?.at ?? Date.now() - 20 * minute;
+    if (!observationClock) setObservationClock(nextObservationWindow(Date.now() + 5 * minute));
+    else if (!choiceEnabled && (observationClock.choiceDue || observationClock.totalScans || observationClock.emptyScans)) {
+      setObservationClock({ ...observationClock, totalScans: 0, emptyScans: 0, choiceDue: null });
+    } else if (observationClock.version !== 3) setObservationClock(observationClock);
     let lastHeartbeat = 0;
     schedule(() => {
       const now = Date.now();
@@ -296,7 +325,7 @@ export function createDirectRuntime({
         const channels = [`private:${cfg.ownerQQ}`, ...cfg.allow.groups.map(id => `group:${id}`)].filter(directAllowed);
         const active = binding();
         directStore.publish('bridge', { at: now, sessionId: active.sessionId, bindingCreatedAt: active.createdAt,
-          channels, paused: isPaused(), supportsObservationEvidence: true, supportsFreeTime: true, supportsDesktopDraft: true, supportsAgentAuthoredDraft: true });
+          channels, paused: isPaused(), observationClockVersion: 3, autonomousChoiceEnabled: choiceEnabled, supportsObservationEvidence: true, supportsFreeTime: true, supportsDesktopDraft: true, supportsAgentAuthoredDraft: true });
         lastHeartbeat = now;
       }
       const revisit = directStore.due(now);
@@ -304,14 +333,21 @@ export function createDirectRuntime({
         directStore.removeDue(revisit);
         if (now - revisit.due < 10 * 60_000) directOpportunity(revisit.channel);
       }
-      if (now >= nextCheck) {
-        nextCheck = now + randInt(20, 50) * minute;
-        const since = Math.min(now - 20 * minute, Math.max(lastCheck, now - 120 * minute));
-        lastCheck = now;
-        directStore.publish('automatic-observation-last-check', { at: lastCheck });
-        if (cfg.allow.groups.length) {
-          const result = automaticObservation('scheduled', cfg.allow.groups.map(id => `group:${id}`), undefined, now, since);
-          if (result === 'quiet') freeTime(now);
+      if (observationClock.choiceDue && !isPaused()) queueAutonomousChoice(now);
+      if (!observationClock.choiceDue && cfg.allow.groups.length && now >= observationClock.nextChanceAt && !isPaused()) {
+        const elapsed = Math.floor((now - observationClock.startAt) / minute);
+        // 20–80: 0.5% to 1.5%. After 80: accelerate quadratically to 100%.
+        const chance = elapsed <= 80 ? 50 + 100 * (elapsed - 20) / 60
+          : 150 + 9850 * ((elapsed - 80) / 20) ** 2;
+        if (elapsed < 100 && randInt(1, 10_000) > Math.round(chance)) {
+          setObservationClock({ ...observationClock, nextChanceAt: observationClock.startAt + (elapsed + 1) * minute });
+        } else {
+          const result = automaticObservation(now);
+          if (result !== 'quiet' && result !== 'queued') {
+            setObservationClock({ ...observationClock, nextChanceAt: now + minute });
+          }
+          recordObservation(result, now);
+          if (observationClock.choiceDue) queueAutonomousChoice(now);
         }
       }
       if (!sending) {
@@ -333,5 +369,5 @@ export function createDirectRuntime({
     }, 5000).unref();
   }
 
-  return { start, receiveDirect, sendDirect, directQzoneOpportunity, appendDirect };
+  return { start, receiveDirect, sendDirect, directQzoneOpportunity, appendDirect, resetObservationAfterConversation };
 }

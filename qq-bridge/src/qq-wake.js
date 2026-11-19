@@ -53,7 +53,7 @@ export function scheduledObservationEvidence(messages, topics) {
   }).slice(0, 3);
 }
 
-export function groupWake({ text, replyTo, sender, recent, lastWake = 0, addressed, now = Date.now(), random = Math.random, topics = [] }) {
+export function groupWake({ text, replyTo, sender, recent, lastWake = 0, addressed, now = Date.now(), random = Math.random, topics = [], allowOpportunity = true }) {
   if (addressed) return 'direct';
   const related = recent.filter(item => item && !item.opportunity && now - item.at < 90_000);
   const terms = topicTerms(text);
@@ -61,6 +61,7 @@ export function groupWake({ text, replyTo, sender, recent, lastWake = 0, address
   const matches = related.some(item => (replyTo && (item.messageId === replyTo || item.quote?.messageId === replyTo)) || overlap(item) >= 2);
   const continuation = now - lastWake < 90_000 && (matches || related.some(item => item.wakeClass === 'direct' && item.senderId === sender));
   if (continuation) return 'continuation';
+  if (!allowOpportunity) return null;
   if (now - lastWake < 180_000 || terms.size < 2) return null;
   const baseChance = 0.025 + (matches ? 0.10 : 0) + (isQuestion(text) ? 0.05 : 0);
   const chance = knownTopic(String(text).replace(/https?:\/\/\S+/g, ''), topics) ? Math.max(0.12, baseChance) : baseChance;

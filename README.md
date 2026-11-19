@@ -18,7 +18,7 @@
 - [权限设计与复建加固](./docs/ARCHITECTURE.md#security)
 - [当前能力与验证层级](./docs/ARCHITECTURE.md#verification)
 
-升级现有安装可参阅 [v0.1.6 更新说明](./docs/UPDATE-0.1.6.md)。
+升级现有安装可参阅 [v0.1.7 更新说明](./docs/UPDATE-0.1.7.md)。
 
 ## 项目来源与致谢
 

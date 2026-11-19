@@ -14,10 +14,7 @@
     "enabled": false,
     "sessionId": "",
     "automaticObservation": {
-      "maxPer24Hours": 8,
-      "cooldownMinutes": 20,
-      "freePer24Hours": 0,
-      "topics": ["方舟", "崩铁", "猫咪", "手机", "编程", "音乐"]
+      "autonomousChoice": false
     }
   },
   "memory": { "enabled": false },

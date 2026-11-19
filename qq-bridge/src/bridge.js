@@ -509,6 +509,7 @@ async function main() {
       }
     });
     const data = await sendResult;
+    if (!options.ledgerSend) noteBridgeConversationSend(key);
     // 更新本地使用统计
     const updated = markStickerUsed(stickerEntries, entry.id, 'sticker');
     stickerEntries = updated.entries;
@@ -4696,7 +4697,7 @@ async function main() {
   }
 
 
-  async function onebotSend(kind, id, message, replyToMessageId, atUserId = null) {
+  async function onebotSend(kind, id, message, replyToMessageId, atUserId = null, ledgerSend = false) {
     const segments = [];
     if (replyToMessageId !== undefined && replyToMessageId !== null && String(replyToMessageId).trim() !== '') {
       const rid = String(replyToMessageId).trim();
@@ -4716,10 +4717,10 @@ async function main() {
       throw new Error('发送内容包含会话令牌，已阻止发送');
     }
     segments.push({ type: 'text', data: { text: escapeCqText(rawMessage) } });
-    return onebotSendSegments(kind, id, segments);
+    return onebotSendSegments(kind, id, segments, ledgerSend);
   }
 
-  async function onebotSendSegments(kind, id, segments) {
+  async function onebotSendSegments(kind, id, segments, ledgerSend = false) {
     const action = kind === 'private' ? 'send_private_msg' : 'send_group_msg';
     const params = kind === 'private' ? { user_id: Number(id), message: segments } : { group_id: Number(id), message: segments };
     const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
@@ -4739,6 +4740,7 @@ async function main() {
       error.definitive = body.status === 'failed';
       throw error;
     }
+    if (!ledgerSend) noteBridgeConversationSend(`${kind}:${id}`);
     return body.data;
   }
 
@@ -7681,14 +7683,26 @@ async function main() {
     saveSocialV2State();
   }
 
-  const { start: startDirect, receiveDirect, sendDirect, directQzoneOpportunity, appendDirect } = createDirectRuntime({
+  function noteBridgeConversationSend(channel) {
+    if (!directStore || !directAllowed(channel)) return;
+    try {
+      resetObservationAfterConversation(Date.now());
+    } catch (error) {
+      log('[qq-direct] 发言已确认，查看计时记录暂不可用:', error.code ?? 'write-failed');
+    }
+  }
+
+  const { start: startDirect, receiveDirect, sendDirect, directQzoneOpportunity, appendDirect,
+    resetObservationAfterConversation } = createDirectRuntime({
     cfg, directStore, directAllowed, exportsDir: path.join(STATE_DIR, 'exports'),
     observationLogDir: path.join(STATE_DIR, 'observation-history'),
     isPaused: () => socialV2.paused || readRoleState().mode === 'silent',
     ensureChannelState: ensureDirectChannelState,
     slangEntries: () => slangEntries, stickerEntries: () => stickerEntries, stickerEnabled,
     buildMemeHint, sharedQzonePolicy, redactSensitiveText, redactKnownTokensOnly,
-    sendStickerV2, synthesizeVoiceToFile, voiceConfig, onebotSend, onebotSendSegments,
+    sendStickerV2, synthesizeVoiceToFile, voiceConfig,
+    onebotSend: (kind, id, text, replyTo, atUserId) => onebotSend(kind, id, text, replyTo, atUserId, true),
+    onebotSendSegments: (kind, id, segments) => onebotSendSegments(kind, id, segments, true),
     randInt, log, schedule: setInterval,
     archiveMemory: callback => {
       if (cfg.memory?.enabled !== true) { callback(null); return; }

@@ -127,7 +127,8 @@ export function openDirectStore(filename) {
     WHERE id GLOB 'qq:check:auto:*' ORDER BY seq DESC LIMIT ?`);
   const freeTime = db.prepare(`SELECT payload FROM input WHERE id GLOB 'qq:free:*' ORDER BY seq DESC LIMIT ?`);
   const observationCandidates = db.prepare(`SELECT payload FROM input WHERE channel=? AND consumed=0 AND wake=0
-    AND seq > COALESCE((SELECT max(seq) FROM input WHERE channel=? AND id GLOB 'qq:check:auto:*'), 0)
+    AND seq > COALESCE((SELECT max(seq) FROM input WHERE channel=? AND id GLOB 'qq:check:auto:*'
+      AND json_extract(payload, '$.observationCancelled') IS NULL), 0)
     AND json_extract(payload, '$.at') >= ? ORDER BY seq DESC LIMIT ?`);
   const observationMessage = db.prepare(`SELECT payload FROM input WHERE id=? AND channel=? AND consumed=0 AND wake=0`);
   const unreadCount = db.prepare(`SELECT count(*) AS total FROM input WHERE channel=? AND consumed=0
@@ -137,6 +138,9 @@ export function openDirectStore(filename) {
     EXISTS (SELECT 1 FROM json_each(payload, '$.media') WHERE json_extract(value, '$.type')='forward' AND json_extract(value, '$.ref')=?)
     ) LIMIT 1`);
   const mark = db.prepare('UPDATE input SET consumed=1 WHERE id=?');
+  const cancelScheduledObservations = db.prepare(`UPDATE input SET consumed=1,
+    payload=json_set(payload, '$.observationCancelled', json('true'))
+    WHERE consumed=0 AND id GLOB 'qq:check:auto:*' AND id<>?`);
   const putDesktopDraft = db.prepare('INSERT OR IGNORE INTO desktop_group_draft VALUES (?,?,?)');
   const readDesktopDraft = db.prepare('SELECT payload FROM desktop_group_draft WHERE id=?');
   const putSend = db.prepare('INSERT OR IGNORE INTO outgoing(id,channel,payload) VALUES (?,?,?)');
@@ -173,6 +177,7 @@ export function openDirectStore(filename) {
     unreadCount: channel => unreadCount.get(channel).total,
     hasForward: (channel, id) => Boolean(seenForward.get(channel, id, id)),
     mark: id => mark.run(id),
+    cancelScheduledObservations: (activeId = '') => cancelScheduledObservations.run(activeId),
     desktopDraft: id => parse(readDesktopDraft.get(id)),
     queueDesktopDraft(draft) {
       const { id, turnKey, request, sessionId, bindingCreatedAt, expires } = draft;
@@ -208,6 +213,19 @@ export function openDirectStore(filename) {
     removeDue: ({ channel, due: time }) => removeDue.run(channel, time),
     runtime: name => parse(readRuntime.get(name)),
     publish: (name, value) => writeRuntime.run(name, JSON.stringify(value)),
+    commitObservation(name, clock, item) {
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        if (!put.run(item.id, item.channel, Number(item.wake), JSON.stringify(item)).changes) {
+          throw new Error('QQ 查看事件重复。');
+        }
+        writeRuntime.run(name, JSON.stringify(clock));
+        db.exec('COMMIT');
+      } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
+      }
+    },
     sawContext: id => Boolean(readContext.get(id)),
     markContext: id => markContext.run(id),
   };

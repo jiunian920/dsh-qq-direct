@@ -2,7 +2,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export function assertDirectSend(origin, destination, format, ownerId) {
-  if (!origin?.channel || origin.qzone || origin.free) throw new Error('当前回合不能发送 QQ 聊天消息。');
+  if (!origin?.channel || origin.qzone || (origin.free && !origin.autonomousChoice)) {
+    throw new Error('当前回合不能发送 QQ 聊天消息。');
+  }
+  if (origin.free && origin.autonomousChoice) {
+    if (!['text', 'sticker'].includes(format) || (destination !== `private:${ownerId}` && !/^group:[1-9]\d*$/.test(destination))) {
+      throw new Error('自主选择回合可向白名单群或主人私聊发送文字、收藏表情。');
+    }
+    return;
+  }
   const owner = ownerId != null && String(ownerId) !== '' && String(origin.senderId) === String(ownerId);
   if (!owner && (destination !== origin.channel || !['text', 'sticker', 'voice'].includes(format))) {
     throw new Error('只有主人发起的回合可以发送本地图片、文件或跨渠道发言。');

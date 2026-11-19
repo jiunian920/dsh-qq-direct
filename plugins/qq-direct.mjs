@@ -32,7 +32,9 @@ export function apply(ctx, config) {
   if (!config?.sessionId || !config?.database) return;
   const store = openDirectStore(config.database);
   const observationContext = item => {
+    if (item.observationCancelled) return [];
     const messages = store.observationContext(item);
+    if (item.observationVersion === 2) return messages;
     return item.observationSource === 'scheduled' ? scheduledObservationEvidence(messages, item.topics)
       : observationEvidence(messages, item.focusId, item.topics);
   };
@@ -141,7 +143,11 @@ export function apply(ctx, config) {
       return '本轮已打开群聊原句，只可查看或提交回群草稿。电脑操作可在下一轮继续。';
     }
     if (scene && !allowed(scene.channel)) return 'QQ 桥已暂停，或当前渠道授权已失效。';
-    if (scene?.free && !freeTools.has(exec.name)) return '自主时段可浏览公开网页、画画或安静结束。';
+    if (scene?.free && !freeTools.has(exec.name)) {
+      if (!scene.autonomousChoice || exec.name !== 'qq_direct_reply' || store.runtime('bridge')?.autonomousChoiceEnabled !== true) {
+        return '自主时段可浏览公开网页、画画或安静结束；启用自主选择时也可发文字或收藏表情。';
+      }
+    }
     if (scene?.qzone && (!qzoneTools.has(exec.name)
       || (exec.name.startsWith('mcp__snowluma__') && exec.arguments?.key !== scene.channel))) return '当前回合只处理这次 QQ 空间机会。';
     if (scene && exec.name === 'qq_direct_reply') {
@@ -274,7 +280,7 @@ export function apply(ctx, config) {
     format: { enum: ['text', 'sticker', 'voice', 'image', 'file'] }, text: { type: 'string', maxLength: 500 },
     imagePath: { type: 'string', maxLength: 500, description: '批准目录 state/exports 内的图片路径' },
     filePath: { type: 'string', maxLength: 500, description: '批准目录 state/exports 内的文件路径' },
-    channel: { type: 'string', maxLength: 30, description: '可选：改发到主人私聊（private:<主人QQ>），不填就回原渠道' },
+    channel: { type: 'string', maxLength: 30, description: 'QQ 渠道键。不填则用本回合渠道；自主选择可指定白名单群或授权私聊。' },
     stickerId: { type: 'string', maxLength: 150 }, mood: { type: 'string', maxLength: 40 },
     replyTo: { type: 'string', maxLength: 24 }, toSender: { type: 'string', maxLength: 24 }, mention: { type: 'boolean' },
     replyToCurrent: { type: 'boolean', description: '已核对说话人后，引用触发当前回合的原句。回复其他人请填原消息 ID 和发送者 ID。' },
@@ -363,17 +369,22 @@ export function apply(ctx, config) {
       return { kind: 'reject' };
     };
     if (automatic && !knownEvidence.length) return discardObservation();
-    if (incoming?.free && (Date.now() >= incoming.expiresAt || incoming.sessionId !== target
+    if (incoming?.free && ((incoming.autonomousChoice && store.runtime('bridge')?.autonomousChoiceEnabled !== true)
+      || Date.now() >= incoming.expiresAt || incoming.sessionId !== target
       || incoming.bindingCreatedAt !== binding.createdAt)) return discardObservation();
     if (incoming && (scene?.id !== incoming.id || scene?.turn !== turn)) {
       scene = { id: incoming.id, channel: incoming.channel, turn, senderId: incoming.senderId, qzone: incoming.qzone === true,
-        free: incoming.free === true, focusId: incoming.focusId, observationSource: incoming.observationSource ?? (incoming.opportunity && !incoming.qzone ? 'revisit' : undefined),
+        free: incoming.free === true, autonomousChoice: incoming.autonomousChoice === true, focusId: incoming.focusId, observationSource: incoming.observationSource ?? (incoming.opportunity && !incoming.qzone ? 'revisit' : undefined),
         origin: incoming.free ? 'free' : incoming.qzone ? 'qq-qzone' : incoming.opportunity ? 'qq-opportunity'
           : incoming.channel.startsWith('group:') ? 'qq-group' : 'qq-private', confirmedReplies: new Set() };
     } else if (!incoming && scene?.turn !== turn) scene = undefined;
     if (!scene && step === 1) lastDesktopAt = Date.now();
     if (incoming || desktopDraftScope?.turn !== turn) desktopDraftScope = undefined;
     const inputs = decision.messages.filter(input => {
+      if (scene?.free && input.id !== scene.id && store.get(input.id)) {
+        deferInput(input);
+        return false;
+      }
       const userInput = input.source?.kind === 'user' || (scene?.free && ['schedule', 'task'].includes(input.source?.kind));
       if (!scene || !userInput || input.id === scene.id || store.get(input.id)) return true;
       deferInput(input);
@@ -407,7 +418,7 @@ export function apply(ctx, config) {
       const id = useIndex ? DRAFT_PREVIEW + item.id : item.wake ? PREVIEW + item.id : item.id;
       if (existing.has(item.id) || existing.has(id) || admitted.has(id) || (useIndex && store.sawContext(id))) continue;
       // Put the boundary in the first actual text block, not in source metadata.
-      const block = useIndex ? renderDesktopGroupPointer(item, id) : renderQQContext(item, { compact: true, safety: false });
+      const block = useIndex ? renderDesktopGroupPointer(item, id) : renderQQContext(item, { compact: true, safety: false, showTime: automatic });
       const length = block.content[0].text.length;
       if (used + length > contextBudgetChars) continue;
       used += length;
@@ -457,7 +468,7 @@ export function apply(ctx, config) {
     if (Date.now() - publishedAt >= 1500) {
       publishedAt = Date.now();
       store.publish('dsh', { at: publishedAt, sessionId: target, bindingCreatedAt: binding.createdAt,
-        available: Boolean(agent), supportsObservationEvidence: true, supportsFreeTime: true, supportsDesktopDraft: true, supportsAgentAuthoredDraft: true });
+        available: Boolean(agent), readyForObservation: agent?.status === 'idle', supportsTimestampedObservation: true, supportsAutonomousChoice: true, supportsObservationEvidence: true, supportsFreeTime: true, supportsDesktopDraft: true, supportsAgentAuthoredDraft: true });
     }
     if (pumping || !agent || agent.status !== 'idle') return;
     const item = store.waking();
